@@ -1,0 +1,46 @@
+[package]
+name = "bam_mcp_server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+noodles = { version = "0.109.0", features = [
+  "bgzf",
+  "core",
+  "fasta",
+  "bam",
+  "sam",
+] }
+rand = "0.10.1"
+rmcp = { version = "1.4.0", features = [
+  "server",
+  "macros",
+  "transport-io",
+  "transport-streamable-http-server",
+] }
+tokio = { version = "1.51.1", features = ["full"] }
+tokio-util = "0.7.18"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+clap = { version = "4.6.0", features = ["derive"] }
+hyper = { version = "1.9.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.20", features = [
+  "tokio",
+  "server",
+  "server-auto",
+] }
+axum = "0.8.8"
+anyhow = "1.0.102"
+uuid = { version = "1.23.0", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+schemars = "1"
+
+[dev-dependencies]
+criterion = "0.8.2"
+tempfile = "3.27.0"
+
+[[bench]]
+name = "bam_queries"
+harness = false

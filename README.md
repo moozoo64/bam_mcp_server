@@ -1,0 +1,165 @@
+# bam-pileup-mcp
+
+A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server written in Rust that accepts a genomic coordinate, queries a BAM file, and returns a text-based pileup representation suitable for reasoning by an LLM.
+
+The server runs as a stdio-based MCP process and is stateless per call.
+
+## Example Output
+
+```
+Region: chr7:117,548,920-117,549,070  (150bp window)  BAM: sample.bam
+
+POS   117548920                                            117549070
+REF   TGCAATCCGAATCGGCATGCCTACGATTTACGGCATGCATCGAATCGGCAT[A]GCATCGGAATCGCATGCCTACGATTTACGGCATGCATCGAATCGGCATGCCT
+
+R01   .............................................................................................................  + MQ60
+R02   ...............................................................[G]............................................ + MQ60
+R03          ..........................................................................................             + MQ59
+R04   ...............................................................[G]............................................ - MQ60
+R05                 ......................................................................                         - MQ58
+
+COV   5x at chr7:117,548,975
+      A: 2 (40.0%)  G: 3 (60.0%)
+      +strand: 3  -strand: 2
+      MQ_mean: 59.4  MQ_min: 58
+      Reads shown: 5  Reads filtered (MAPQ): 0  Reads filtered (dup/qcfail): 0
+```
+
+## Requirements
+
+- Sorted, indexed BAM file (`.bam` + `.bam.bai`)
+- FASTA reference file with index (`.fa.gz` + `.fa.gz.fai` + `.fa.gz.gzi`, or plain `.fa` + `.fa.fai`)
+- Rust 1.85+ (2024 edition)
+
+## Building
+
+```bash
+cargo build --release
+```
+
+The binary is at `target/release/bam_mcp_server`.
+
+## Usage
+
+```
+bam_mcp_server --bam <PATH> --reference <PATH> [OPTIONS]
+
+Options:
+  -b, --bam <PATH>           Path to sorted, indexed BAM file
+  -r, --reference <PATH>     Path to FASTA reference (.fai index must exist alongside)
+  -w, --window <INT>         Default window half-width in bp around query position [default: 75]
+  -d, --max-depth <INT>      Maximum reads to display in pileup [default: 50]
+  -q, --min-mapq <INT>       Minimum mapping quality filter [default: 0]
+  -Q, --min-baseq <INT>      Minimum base quality to show as uppercase [default: 20]
+      --debug                Write debug output to stderr
+      --log-file <PATH>      Write debug log to file instead of stderr
+  -h, --help                 Print help
+  -V, --version              Print version
+```
+
+All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout** exclusively.
+
+## MCP Tool
+
+### `query_pileup`
+
+**Input parameters:**
+
+| Parameter     | Type    | Required | Description |
+|---------------|---------|----------|-------------|
+| `chrom`       | string  | ✓        | Chromosome name exactly as in the BAM header (e.g. `chr1`, `1`, `chrM`) |
+| `position`    | integer | ✓        | 1-based genomic position to query |
+| `window`      | integer |          | Half-width of region in bp (overrides `--window`) |
+| `min_mapq`    | integer |          | Minimum mapping quality (overrides `--min-mapq`) |
+| `show_strand` | boolean |          | Show strand orientation per read [default: true] |
+| `show_mapq`   | boolean |          | Show mapping quality per read [default: true] |
+
+**Output:** A single `text` content block containing the pileup as a UTF-8 string.
+
+### Pileup symbols
+
+| Symbol | Meaning |
+|--------|---------|
+| `.`    | Base matches reference |
+| `A/C/G/T` (uppercase) | Mismatch, base quality ≥ min-baseq |
+| `a/c/g/t` (lowercase) | Mismatch, base quality < min-baseq |
+| `-`    | Deletion in read |
+| `^N`   | N inserted bases follow this position |
+| ` `    | Read does not span this position |
+| `[X]`  | Queried position (regardless of match/mismatch) |
+
+## MCP Client Configuration
+
+### Claude Desktop (`claude_desktop_config.json`)
+
+```json
+{
+  "mcpServers": {
+    "bam-pileup": {
+      "command": "/path/to/bam_mcp_server",
+      "args": [
+        "--bam", "/path/to/sample.bam",
+        "--reference", "/path/to/reference.fa.gz"
+      ]
+    }
+  }
+}
+```
+
+### VS Code (`.vscode/mcp.json`)
+
+```json
+{
+  "servers": {
+    "bam-pileup": {
+      "type": "stdio",
+      "command": "/path/to/bam_mcp_server",
+      "args": [
+        "--bam", "/path/to/sample.bam",
+        "--reference", "/path/to/reference.fa.gz"
+      ]
+    }
+  }
+}
+```
+
+## Architecture
+
+```
+src/
+├── main.rs       — Entry point: parse CLI, init logging, start MCP server
+├── lib.rs        — Library root (exposes modules for integration tests)
+├── cli.rs        — Clap CLI args and AppConfig validation
+├── server.rs     — rmcp tool handler; wires the pipeline together
+├── reference.rs  — BGZF/plain FASTA random-access reader (noodles)
+├── query.rs      — BAM region query, filtering, reservoir sampling (noodles)
+├── pileup.rs     — CIGAR expansion into reference-coordinate-aligned arrays
+├── render.rs     — Text rendering: dots, brackets, footer
+└── error.rs      — Error type re-exports (anyhow)
+```
+
+The pipeline per call:
+
+1. Resolve `window` / `min_mapq` overrides from tool params vs CLI defaults
+2. Compute 0-based `[region_start, region_end)` from the 1-based query position
+3. Fetch reference sub-sequence (`ReferenceReader::fetch`)
+4. Query BAM for overlapping reads with filtering (`query_region`)
+5. Expand each read's CIGAR into per-reference-position slots (`expand_reads`)
+6. Render to text (`render_pileup`)
+
+## Testing
+
+```bash
+# Unit tests only
+cargo test
+
+# Including integration tests against sample files
+cargo test -- --include-ignored
+cargo test --test integration
+```
+
+27 tests total: 17 unit tests (pure logic, no I/O), 7 sample-file unit tests, 3 end-to-end integration tests.
+
+## License
+
+MIT
