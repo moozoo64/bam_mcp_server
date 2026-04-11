@@ -7,6 +7,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::debug;
 
+use noodles::bam;
+
 use crate::cli::AppConfig;
 use crate::pileup::expand_reads;
 use crate::query::query_region;
@@ -67,9 +69,42 @@ impl PileupServer {
             }
         }
     }
+
+    /// Return the README documentation for this server, including usage instructions,
+    /// tool descriptions, pileup symbol reference, and client configuration examples.
+    #[tool(description = "Return the README documentation for this MCP server")]
+    async fn get_documentation(&self) -> String {
+        include_str!("../README.md").to_string()
+    }
+
+    /// Return the SAM-format header of the BAM file, including @HD, @SQ, @RG, @PG lines.
+    #[tool(description = "Return the SAM-format header of the BAM file")]
+    async fn get_header(&self) -> String {
+        match self.do_get_header() {
+            Ok(header) => header,
+            Err(e) => {
+                tracing::error!("{:#}", e);
+                format!("Error: {:#}", e)
+            }
+        }
+    }
 }
 
 impl PileupServer {
+    fn do_get_header(&self) -> anyhow::Result<String> {
+        use anyhow::Context as _;
+        let mut reader = bam::io::indexed_reader::Builder::default()
+            .build_from_path(&self.config.bam_path)
+            .with_context(|| format!("Failed to open BAM: {}", self.config.bam_path.display()))?;
+        let header = reader.read_header().context("Failed to read BAM header")?;
+        let mut buf = Vec::new();
+        let mut writer = noodles::sam::io::Writer::new(&mut buf);
+        writer
+            .write_header(&header)
+            .context("Failed to write SAM header")?;
+        String::from_utf8(buf).context("SAM header is not valid UTF-8")
+    }
+
     async fn do_query_pileup(&self, params: QueryPileupParams) -> anyhow::Result<String> {
         let config = &self.config;
 

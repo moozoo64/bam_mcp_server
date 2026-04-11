@@ -65,7 +65,7 @@ Options:
 
 All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout** (stdio mode) or the HTTP response body (HTTP mode).
 
-## MCP Tool
+## MCP Tools
 
 ### `query_pileup`
 
@@ -81,6 +81,28 @@ All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout
 | `show_mapq`   | boolean |          | Show mapping quality per read [default: true] |
 
 **Output:** A single `text` content block containing the pileup as a UTF-8 string.
+
+---
+
+### `get_header`
+
+Returns the SAM-format header of the BAM file (`@HD`, `@SQ`, `@RG`, `@PG` lines), useful for discovering available chromosomes, read groups, and the programs used to generate the file.
+
+**Input parameters:** none
+
+**Output:** A `text` content block containing the SAM header as a UTF-8 string.
+
+---
+
+### `get_documentation`
+
+Returns the full README for this server, including usage instructions, tool descriptions, and client configuration examples.
+
+**Input parameters:** none
+
+**Output:** A `text` content block containing the README as a UTF-8 string.
+
+---
 
 ### Pileup symbols
 
