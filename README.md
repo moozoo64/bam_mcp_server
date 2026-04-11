@@ -1,4 +1,7 @@
-# bam-pileup-mcp
+# bam-pileup-mcp: Exposing DNA BAM Format files to LLMs for Analysis
+
+> **Early Release** — this project is in early development and may have significant bugs,
+> incomplete features, or breaking changes without notice. Use with appropriate caution.
 
 A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server written in Rust that accepts a genomic coordinate, queries a BAM file, and returns a text-based pileup representation suitable for reasoning by an LLM.
 
@@ -183,4 +186,9 @@ cargo test --test http          # HTTP transport tests
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for the full text.
+
+## Credits
+
+Vibe coded by [Michael Simmons](https://github.com/michael-simmons) using
+[GitHub Copilot](https://github.com/features/copilot) powered by Claude Sonnet 4.6.
