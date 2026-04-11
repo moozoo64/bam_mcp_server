@@ -1,37 +1,45 @@
-# BAM Pileup MCP Server — Specification & Implementation Plan
+# BAM Pileup MCP Server — Specification
 
 ## Overview
 
 A Model Context Protocol (MCP) server written in Rust (2024 edition) that accepts a genomic
 coordinate, queries a BAM file, and returns a text-based pileup representation suitable for
-reasoning by an LLM. The server runs as a stdio-based MCP process, is stateless per call, and
-requires a sorted, indexed BAM file and an accompanying FASTA reference.
+reasoning by an LLM. The server is stateless per call and requires a sorted, indexed BAM file
+and an accompanying FASTA reference.
+
+Two transports are supported:
+- **stdio** (default) — standard MCP process wired over stdin/stdout
+- **HTTP** (`--sse`) — streamable-HTTP MCP transport served by axum; responses are SSE
+  (`text/event-stream`). Clients must include `Accept: application/json, text/event-stream`.
 
 ---
 
 ## 1. Command-Line Interface
 
 ```
-bam-pileup-mcp [OPTIONS] --bam <PATH> --reference <PATH>
+bam_mcp_server [OPTIONS] --bam <PATH> --reference <PATH>
 
 Options:
   -b, --bam <PATH>           Path to sorted, indexed BAM file (.bam + .bai must exist)
-  -r, --reference <PATH>     Path to FASTA reference file (.fa/.fasta + .fai must exist)
+  -r, --reference <PATH>     Path to FASTA reference file (.fai index must exist alongside)
   -w, --window <INT>         Default window half-width in bp around query position [default: 75]
   -d, --max-depth <INT>      Maximum reads to display in pileup [default: 50]
   -q, --min-mapq <INT>       Minimum mapping quality filter [default: 0]
   -Q, --min-baseq <INT>      Minimum base quality to show as uppercase [default: 20]
-      --debug                Write debug output to stderr (MCP uses stdout for protocol)
+      --sse <ADDR:PORT>       Run as HTTP MCP server instead of stdio (e.g. 127.0.0.1:8090)
+      --debug                Write debug output to stderr
       --log-file <PATH>      Write debug log to file instead of stderr
   -h, --help                 Print help
   -V, --version              Print version
 ```
 
 ### Notes
-- `--debug` must never write to stdout — MCP protocol uses stdout exclusively for JSON-RPC
-- `.bai` index is assumed to be at `<bam>.bai`; `.fai` index at `<reference>.fai`
+- `--debug` never writes to stdout — stdio MCP protocol uses stdout exclusively for JSON-RPC
+- BAM index: both `<file>.bam.bai` and `<file>.bai` sidecars are accepted
+- FASTA index: both `<file>.fa.gz.fai` and `<file>.fai` sidecars are accepted; BGZF `.fa.gz`
+  requires an additional `.fa.gz.gzi` block index
 - `--window` can be overridden per-call by the MCP tool arguments
-- All paths are validated at startup and the process exits with a clear error if any are missing
+- All paths are validated at startup; the process exits with a clear error if any are missing
 
 ---
 
@@ -58,24 +66,23 @@ insertions, and deletions.
       "description": "1-based genomic position to query"
     },
     "window": {
-      "type": "integer",edition download
+      "type": ["integer", "null"],
       "description": "Half-width of region around position in bp. Overrides --window CLI default.",
-      "minimum": 10,
-      "maximum": 500
+      "minimum": 0
     },
     "min_mapq": {
-      "type": "integer",
+      "type": ["integer", "null"],
       "description": "Minimum mapping quality. Overrides --min-mapq CLI default.",
       "minimum": 0,
-      "maximum": 60
+      "maximum": 255
     },
     "show_strand": {
-      "type": "boolean",
+      "type": ["boolean", "null"],
       "description": "Show strand (+/-) column per read",
       "default": true
     },
     "show_mapq": {
-      "type": "boolean",
+      "type": ["boolean", "null"],
       "description": "Show mapping quality column per read",
       "default": true
     }
@@ -95,7 +102,7 @@ Returns a single `text` content block containing the pileup as a UTF-8 string.
 ### 3.1 Header
 
 ```
-Region: chr7:117,548,920-117,549,070  (150bp window)  Reference: GRCh38  BAM: sample.bam
+Region: chr7:117,548,920-117,549,070  (150bp window)  BAM: sample.bam
 ```
 
 ### 3.2 Reference Line
@@ -175,42 +182,38 @@ COV   8x at chr7:117,548,975
 
 ```toml
 [package]
-name    = "bam-pileup-mcp"
+name    = "bam_mcp_server"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
-# MCP server framework
-rmcp = { version = "0.1", features = ["server", "transport-io"] }
-
-# Genomics I/O
-noodles-bam  = "0.72"
-noodles-bai  = "0.52"
-noodles-fasta = "0.40"
-noodles-fai  = "0.25"
-noodles-core = "0.16"
-noodles-sam  = "0.66"    # for record/cigar types shared with BAM
-
-# Async runtime (rmcp is async)
-tokio = { version = "1", features = ["full"] }
-
-# CLI
-clap = { version = "4", features = ["derive"] }
-
-# Serialization (MCP JSON-RPC)
-serde       = { version = "1", features = ["derive"] }
-serde_json  = "1"
-
-# Base64 (if image content ever added later)
-base64 = "0.22"
-
-# Error handling
-anyhow  = "1"
-thiserror = "1"
-
-# Logging (to stderr only)
-tracing            = "0.1"
+noodles = { version = "0.109.0", features = ["bgzf", "core", "fasta", "bam", "sam"] }
+rand = "0.10.1"
+rmcp = { version = "1.4.0", features = [
+  "server",
+  "macros",
+  "transport-io",
+  "transport-streamable-http-server",
+] }
+tokio = { version = "1.51.1", features = ["full"] }
+tokio-util = "0.7.18"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+clap = { version = "4.6.0", features = ["derive"] }
+hyper = { version = "1.9.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.20", features = ["tokio", "server", "server-auto"] }
+axum = "0.8.8"
+anyhow = "1.0.102"
+uuid = { version = "1.23.0", features = ["v4"] }
+tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+schemars = "1"
+
+[dev-dependencies]
+criterion = "0.8.2"
+tempfile = "3.27.0"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 ```
 
 ---
@@ -218,333 +221,298 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ## 5. Module Structure
 
 ```
-bam-pileup-mcp/
+bam_mcp_server/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── README.md
+├── .github/
+│   └── copilot-instructions.md
+├── docs/
+│   └── bam-pileup-mcp-spec.md   (this file)
+├── benches/
+│   └── bam_queries.rs
+├── tests/
+│   ├── integration.rs            # end-to-end pipeline tests
+│   └── http.rs                   # HTTP transport tests
 └── src/
-    ├── main.rs          # Entry point: parse CLI, init logging, start MCP server
-    ├── cli.rs           # Clap CLI struct and validation
-    ├── server.rs        # rmcp Tool impl, request dispatch
-    ├── query.rs         # BAM region query, read collection, MAPQ/flag filtering
-    ├── pileup.rs        # Core pileup logic: CIGAR expansion, row alignment
-    ├── reference.rs     # FASTA/FAI reference sequence fetching
-    ├── render.rs        # Text rendering: dots-for-matches, brackets, summary
-    └── error.rs         # Error types
+    ├── main.rs       — Entry point: parse CLI, init logging, start stdio or HTTP server
+    ├── lib.rs        — Library root; all modules are pub for integration test access
+    ├── cli.rs        — Clap Args struct + AppConfig validation
+    ├── server.rs     — PileupServer: rmcp #[tool_router], wires the pipeline
+    ├── query.rs      — BAM region query, MAPQ/flag filtering, reservoir sampling
+    ├── pileup.rs     — CIGAR expansion into reference-coordinate-aligned arrays
+    ├── reference.rs  — BGZF/plain FASTA random-access via noodles IndexedReader
+    ├── render.rs     — Text rendering: dots, brackets, footer, coverage stats
+    └── error.rs      — anyhow re-exports
 ```
 
 ---
 
-## 6. Implementation Plan
+## 6. Implementation Details
 
-### Phase 1 — Scaffold & CLI (Day 1 morning)
+### 6.1 CLI & Configuration (`cli.rs`)
 
-**`cli.rs`**
-- Define `Args` struct with clap `#[derive(Parser)]`
-- Validate at startup:
-  - BAM file exists and `.bai` sidecar exists
-  - FASTA file exists and `.fai` sidecar exists
-  - window > 0, max_depth > 0
-- Store validated paths in an `AppConfig` struct passed to the server
+`Args` is a `clap::Parser` derive struct. `AppConfig::try_from(Args)` validates at startup:
+- BAM file exists; both `<file>.bam.bai` and `<file>.bai` sidecar paths are checked
+- FASTA file exists; both `<file>.fai` and `<file>.<ext>.fai` checked
+- All missing files produce a clear error before any MCP traffic
 
-**`main.rs`**
-- Init `tracing_subscriber` directed to stderr (never stdout)
-- Parse `Args`, build `AppConfig`
-- Construct `PileupServer` and hand to rmcp's stdio transport
+### 6.2 Entry point (`main.rs`)
+
+`tracing_subscriber` is directed to stderr exclusively. Transport selection:
 
 ```rust
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
-    init_logging(&args);
-    let config = AppConfig::try_from(args)?;
-    let server = PileupServer::new(config);
-    let transport = rmcp::transport::io::stdio();
-    rmcp::serve(server, transport).await?;
-    Ok(())
+if let Some(ref addr) = config.sse {
+    // HTTP: StreamableHttpService over axum, mount at /mcp
+    let service = StreamableHttpService::new(
+        move || Ok(PileupServer::from_arc(Arc::clone(&config_arc))),
+        LocalSessionManager::default().into(),
+        StreamableHttpServerConfig::default(),
+    );
+    let router = Router::new().nest_service("/mcp", service);
+    axum::serve(listener, router).await?;
+} else {
+    // stdio: rmcp's built-in IO transport
+    let service = server.serve(stdio()).await?;
+    service.waiting().await?;
 }
 ```
 
----
-
-### Phase 2 — Reference Fetching (Day 1 afternoon)
-
-**`reference.rs`**
+### 6.3 Reference Fetching (`reference.rs`)
 
 ```rust
 pub struct ReferenceReader {
-    path: PathBuf,
-    index: fai::Index,
+    inner: noodles::fasta::io::IndexedReader<File>,
 }
 
 impl ReferenceReader {
     pub fn open(fasta: &Path) -> anyhow::Result<Self>
-    pub fn fetch(&self, chrom: &str, start: usize, end: usize) -> anyhow::Result<Vec<u8>>
+    pub fn fetch(&mut self, chrom: &str, start: i64, end: i64) -> anyhow::Result<Vec<u8>>
 }
 ```
 
-- Use `noodles_fasta` with `fai` index for random access
-- Return raw bytes (uppercase); caller converts to `Vec<char>` for rendering
-- Validate that requested region is within sequence bounds
+- Uses `noodles::fasta::io::indexed_reader::Builder` for transparent BGZF / plain handling
+- Coordinates are **0-based half-open** `[start, end)`; converted to noodles 1-based inclusive
+  positions internally
+- Returns raw uppercase ASCII bytes
 
----
-
-### Phase 3 — BAM Query & Filtering (Day 1 afternoon)
-
-**`query.rs`**
+### 6.4 BAM Query & Filtering (`query.rs`)
 
 ```rust
+pub enum CigarOp { Match(u32), Ins(u32), Del(u32), SoftClip(u32), HardClip(u32), Skip(u32) }
+
 pub struct ReadRecord {
-    pub name:       String,
-    pub ref_start:  i64,       // 0-based
-    pub ref_end:    i64,       // 0-based exclusive
-    pub cigar:      Vec<CigarOp>,
-    pub sequence:   Vec<u8>,   // raw bases
+    pub name: String,
+    pub ref_start: i64,   // 0-based inclusive
+    pub ref_end: i64,     // 0-based exclusive
+    pub cigar: Vec<CigarOp>,
+    pub sequence: Vec<u8>,
     pub base_quals: Vec<u8>,
     pub is_reverse: bool,
-    pub mapq:       u8,
-    pub is_dup:     bool,
-    pub is_qcfail:  bool,
+    pub mapq: u8,
+    pub is_dup: bool,
+    pub is_qcfail: bool,
 }
 
 pub struct QueryResult {
-    pub reads:           Vec<ReadRecord>,
-    pub filtered_mapq:   usize,
-    pub filtered_flags:  usize,
+    pub reads: Vec<ReadRecord>,
+    pub filtered_mapq: usize,
+    pub filtered_flags: usize,
 }
 
 pub fn query_region(
-    bam_path: &Path,
-    chrom: &str,
-    start: i64,   // 0-based
-    end: i64,     // 0-based exclusive
-    min_mapq: u8,
+    bam_path: &Path, chrom: &str,
+    start: i64, end: i64,   // 0-based half-open
+    min_mapq: u8, max_depth: usize,
 ) -> anyhow::Result<QueryResult>
 ```
 
-- Open BAM with `noodles_bam::io::indexed_reader::Builder`
-- Parse header to validate chromosome name exists; return clear error if not
-- Build `noodles_core::Region` from chrom/start/end
-- Iterate query results, extract fields, apply filters:
-  - Skip reads below `min_mapq`
-  - Skip secondary, supplementary alignments
-  - Track (but don't display) duplicates and QC-fail reads separately
-- Cap at `max_depth` reads (reservoir sample if over cap)
+Filtering decision tree (applied in order):
+1. Unmapped / secondary / supplementary → skipped silently (not counted)
+2. `mapq < min_mapq` → counted in `filtered_mapq`, excluded from output
+3. Duplicate or QC-fail → counted in `filtered_flags`, excluded from output
+4. If eligible reads exceed `max_depth`, a **reservoir sample** of exactly `max_depth` is kept
 
-**CIGAR op enum (internal)**
+All three "match" CIGAR op codes (M / = / X) are collapsed to `CigarOp::Match` — the pileup
+engine does its own base comparison against the reference.
 
-```rust
-pub enum CigarOp {
-    Match(u32),      // M, = (ref consumed, read consumed)
-    Ins(u32),        // I (read consumed only)
-    Del(u32),        // D (ref consumed only)
-    SoftClip(u32),   // S (read consumed, not shown)
-    HardClip(u32),   // H (ignored)
-    Skip(u32),       // N (intron/large gap)
-}
-```
-
----
-
-### Phase 4 — Pileup Construction (Day 2 morning)
-
-**`pileup.rs`**
-
-The core of the work. Expands each read's CIGAR into a reference-coordinate-aligned sequence.
+### 6.5 CIGAR Expansion (`pileup.rs`)
 
 ```rust
-pub struct AlignedRead {
-    pub record:      ReadRecord,
-    pub ref_bases:   Vec<Option<PileupBase>>,  // indexed by ref position offset
-}
-
 pub enum PileupBase {
     Match,
-    Mismatch { base: char, qual: u8 },
+    Mismatch { base: u8, qual: u8 },
     Deletion,
-    Insertion { count: u32 },  // insertion after this ref position
+}
+
+pub struct AlignedRead {
+    pub record: ReadRecord,
+    pub bases: Vec<Option<PileupBase>>,  // one slot per ref position in [region_start, region_end)
+    pub ins_after: Vec<u32>,             // insertion count after position i; parallel to bases
 }
 
 pub fn expand_reads(
-    reads: &[ReadRecord],
-    ref_seq: &[u8],
-    region_start: i64,
-    region_end: i64,
+    reads: &[ReadRecord], ref_seq: &[u8],
+    region_start: i64, region_end: i64,
 ) -> Vec<AlignedRead>
 ```
 
-**CIGAR expansion algorithm:**
+CIGAR expansion algorithm:
 
 ```
-read_pos  = 0
-ref_pos   = record.ref_start
+ref_pos  = record.ref_start
+read_pos = 0
 
 for each cigar op:
-  match op:
-    Match(n) | SeqMatch(n) | SeqMismatch(n):
-      for i in 0..n:
-        ref_base  = ref_seq[ref_pos - region_start]
-        read_base = record.sequence[read_pos]
-        emit Match or Mismatch at ref_pos
-        ref_pos++; read_pos++
+  Match(n):
+    compare read base to ref base; emit Match or Mismatch at ref_pos
+    ref_pos += 1; read_pos += 1  (×n)
 
-    Del(n):
-      for i in 0..n:
-        emit Deletion at ref_pos
-        ref_pos++
+  Del(n):
+    emit Deletion at ref_pos; ref_pos += 1  (×n)
 
-    Ins(n):
-      emit Insertion{count: n} at current ref_pos (after)
-      read_pos += n
+  Ins(n):
+    set ins_after[ref_pos - 1] = n (clamped to window); read_pos += n
 
-    SoftClip(n):
-      read_pos += n   // skip, do not advance ref_pos
+  SoftClip(n):
+    read_pos += n  (ref_pos unchanged)
 
-    Skip(n):
-      ref_pos += n    // splice gap, emit spaces
+  Skip(n) | HardClip(n):
+    ref_pos += n  (or ignored)
 ```
 
----
+Slots outside `[region_start, region_end)` are ignored. `None` means the read does not span
+that reference position.
 
-### Phase 5 — Text Rendering (Day 2 morning)
-
-**`render.rs`**
+### 6.6 Text Rendering (`render.rs`)
 
 ```rust
+pub struct RenderOpts {
+    pub chrom: String,
+    pub bam_name: String,
+    pub show_strand: bool,
+    pub show_mapq: bool,
+    pub min_baseq: u8,
+}
+
 pub fn render_pileup(
-    reads:        &[AlignedRead],
-    ref_seq:      &[u8],
-    region_start: i64,
-    query_pos:    i64,
-    query_result: &QueryResult,
-    opts:         &RenderOpts,
+    reads: &[AlignedRead], ref_seq: &[u8],
+    region_start: i64, query_pos: i64,
+    query_result: &QueryResult, opts: &RenderOpts,
 ) -> String
 ```
 
-**Rendering steps:**
+Rendering steps:
+1. **Header** — `Region: chrom:start-end  (Nbp window)  BAM: filename`
+2. **POS ruler** — start/end coords, `[*]` marker at query position
+3. **REF line** — reference bases; query position bracketed as `[X]`
+4. *(blank line)*
+5. **Read lines** — `R01 … RNN` rows, one per `AlignedRead`:
+   - `None` slot → space
+   - `Match` → `.`
+   - `Mismatch`, qual ≥ `min_baseq` → uppercase base
+   - `Mismatch`, qual < `min_baseq` → lowercase base
+   - `Deletion` → `-`
+   - `ins_after[i] > 0` → `^N` appended to that slot's symbol
+   - Query position → `[X]` brackets wrap the slot
+   - Suffix: `  + MQ60` (strand and/or MAPQ if enabled)
+6. *(blank line)*
+7. **Footer** — coverage, allele counts at query position, strand balance, MQ stats, filter counts
 
-1. **Header line** — region, window size, BAM filename
-2. **POS ruler** — start and end positions, query position marker
-3. **REF line** — reference bases with `[X]` at query position
-4. **Separator** — `|||...|||`
-5. **Read lines** — for each `AlignedRead`:
-   - Left-pad with spaces to `ref_start - region_start`
-   - For each ref position in window:
-     - space if read doesn't span
-     - `.` if match
-     - uppercase base if mismatch + high qual
-     - lowercase base if mismatch + low qual
-     - `-` if deletion
-     - `^N` if insertion follows (N = count)
-     - `[X]` bracket at query position regardless
-   - Append strand and MAPQ suffix
-6. **Separator**
-7. **Summary footer** — coverage, allele counts, strand balance, filter counts
+### 6.7 MCP Server (`server.rs`)
 
-**Allele counting** at query position:
-- Walk all reads, extract base at `query_pos`
-- Count each distinct base (A/C/G/T/del)
-- Compute percentages
+`PileupServer` is a `Clone + Send + Sync` struct wrapping `Arc<AppConfig>`. The `#[tool_router]`
+macro wires `query_pileup` into the MCP `tools/list` and `tools/call` handlers. Tool-level
+errors are returned as plain-text content strings, not JSON-RPC protocol errors.
 
----
-
-### Phase 6 — MCP Server (Day 2 afternoon)
-
-**`server.rs`**
-
-```rust
-use rmcp::{ServerHandler, Tool, ToolResult, Content};
-
-pub struct PileupServer {
-    config: Arc<AppConfig>,
-}
-
-#[rmcp::tool(name = "query_pileup")]
-impl PileupServer {
-    async fn query_pileup(&self, params: QueryPileupParams) -> ToolResult {
-        // 1. Resolve window (param override or config default)
-        // 2. Compute region start/end from position ± window
-        // 3. Fetch reference sequence
-        // 4. Query BAM
-        // 5. Expand CIGAR into AlignedReads
-        // 6. Render to string
-        // 7. Return as Content::text(rendered)
-    }
-}
-```
-
-rmcp handles:
-- JSON-RPC framing over stdio
-- `initialize` / `tools/list` / `tools/call` protocol messages
-- Serialization of input params
-- Error responses for invalid params
+Per-call pipeline:
+1. Resolve `window` / `min_mapq` overrides (tool params take precedence over CLI defaults)
+2. Convert 1-based input position to 0-based `query_pos_0`; compute `[region_start, region_end)`
+3. `ReferenceReader::fetch` → `ref_seq: Vec<u8>`
+4. `query_region` → `QueryResult`
+5. `expand_reads` → `Vec<AlignedRead>`
+6. `render_pileup` → `String` returned as MCP text content
 
 ---
 
 ## 7. Error Handling Strategy
 
-| Error situation                        | Response                                      |
-|----------------------------------------|-----------------------------------------------|
-| Chromosome not in BAM header           | MCP error: `"Unknown chromosome: chrX"`       |
-| Position out of reference bounds       | MCP error with valid range                    |
-| BAM index missing at runtime           | MCP error (caught at startup ideally)         |
-| Zero reads in region                   | Valid response: pileup with "No reads in region" message |
-| Region too large (> 2× max window)     | MCP error: suggest smaller window             |
-| CIGAR parse failure on a read          | Log warning to stderr, skip that read, continue |
+| Error situation                        | Response                                                    |
+|----------------------------------------|-------------------------------------------------------------|
+| Chromosome not in BAM header           | Tool content: `"Error: Unknown chromosome: chrX"`           |
+| BAM / FASTA file not found at startup  | Process exits with clear message before MCP traffic begins  |
+| Zero reads in region                   | Valid pileup: REF line + empty read section + `0x` footer   |
+| CIGAR parse failure on a read          | `tracing::error!` to stderr; read is skipped, others shown  |
+| Invalid 0-based coordinate             | `anyhow::bail!` propagated as tool-level error text         |
 
-All user-facing errors are `anyhow::Result` propagated to rmcp as tool errors.
-Internal unexpected errors use `tracing::error!` to stderr before returning.
+All errors inside `do_query_pileup` are `anyhow::Result` propagated to the `query_pileup`
+handler which returns them as plain-text content rather than JSON-RPC protocol errors.
 
 ---
 
 ## 8. Debug Logging
 
-With `--debug` or `RUST_LOG=debug`:
+With `--debug` or `RUST_LOG=debug` (all output to stderr via `tracing`):
 
 ```
-[DEBUG] BAM: /data/SQ3J6L38.bam  Reference: /data/GRCh38.fa
 [DEBUG] query_pileup called: chr7:117548975 window=75 min_mapq=0
 [DEBUG] Region: chr7:117548900-117549050
 [DEBUG] Reference fetched: 150bp starting TGCAATCC...
-[DEBUG] BAM query returned 49 records
-[DEBUG] Filtered: 2 MAPQ, 0 dup, 0 qcfail → 47 displayed
-[DEBUG] CIGAR expansion: 47 reads expanded in 1.2ms
+[DEBUG] BAM query returned 49 records; filtered MAPQ=2 flags=0
+[DEBUG] CIGAR expansion: 47 reads in 1.2ms
 [DEBUG] Render complete: 54 lines, 8240 chars
 ```
 
-All to stderr via `tracing`. Never touches stdout.
-
 ---
 
-## 9. Testing Plan
+## 9. Testing
 
-### Unit tests
+### Test suites
 
-- `reference.rs`: fetch known sequence from test FASTA, assert bytes match
-- `pileup.rs`: hand-crafted CIGAR strings → assert correct expansion
-  - Pure match read
-  - Read with SNP at known position
-  - Read with 2bp deletion
-  - Read with 3bp insertion
-  - Soft-clipped read
-- `render.rs`: known `AlignedRead` set → assert specific lines in output string
+| Suite | File | Count | Requires samples/ |
+|-------|------|-------|-------------------|
+| Unit tests | `src/**` | 17 (7 `#[ignore]`) | 7 ignored tests only |
+| HTTP transport | `tests/http.rs` | 4 | Yes |
+| End-to-end pipeline | `tests/integration.rs` | 3 | Yes |
 
-### Integration tests
-
-- Use a small synthetic BAM (generate with `samtools view` from NA12878 or similar)
-- Known het SNP position → assert allele counts in footer
-- Known homozygous position → assert 100% reference dots
-- Region with no reads → assert graceful empty output
-- Invalid chromosome → assert MCP error response
-
-### Manual smoke test
+### Running tests
 
 ```bash
-# Start server
-bam-pileup-mcp --bam sample.bam --reference GRCh38.fa --debug
+cargo test                             # unit + HTTP + end-to-end
+cargo test -- --include-ignored        # also runs #[ignore]-gated sample-file unit tests
+cargo test --test integration          # end-to-end pipeline only
+cargo test --test http                 # HTTP transport only
+```
 
-# In another terminal via MCP client or raw JSON-RPC:
+### HTTP test approach
+
+`tests/http.rs` spins up a real axum server on a random port (`TcpListener::bind("127.0.0.1:0")`)
+for each test — no mocking. The server requires `Accept: application/json, text/event-stream`;
+all responses are SSE. The `parse_sse_json()` helper in that file extracts the JSON-RPC payload
+from the `data:` lines.
+
+Tests cover:
+- `test_initialize_response` — MCP handshake, session ID header, protocol version
+- `test_tools_list_contains_query_pileup` — tool listing with correct schema
+- `test_tools_call_query_pileup_valid` — real pileup output structure
+- `test_tools_call_query_pileup_invalid_chrom` — tool-level error message format
+
+### Manual smoke test (stdio)
+
+```bash
+bam_mcp_server --bam sample.bam --reference GRCh38.fa.gz --debug
+# In another terminal, via raw JSON-RPC on stdin:
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"query_pileup","arguments":{"chrom":"chr7","position":117548975}}}
+```
+
+### Manual smoke test (HTTP)
+
+```bash
+bam_mcp_server --bam sample.bam --reference GRCh38.fa.gz --sse 127.0.0.1:8090
+curl -X POST http://127.0.0.1:8090/mcp \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}'
 ```
 
 ---
@@ -561,22 +529,4 @@ bam-pileup-mcp --bam sample.bam --reference GRCh38.fa --debug
 | Strand bias test | Could compute Fisher exact p-value and include in footer |
 | Base quality histogram | Per-position BQ summary useful for diagnosing systematic errors |
 
----
 
-## 11. Estimated Effort
-
-| Phase | Estimated time |
-|-------|----------------|
-| Phase 1: Scaffold & CLI | 2–3 hours |
-| Phase 2: Reference fetching | 2–3 hours |
-| Phase 3: BAM query & filtering | 3–4 hours |
-| Phase 4: CIGAR expansion (pileup core) | 4–6 hours |
-| Phase 5: Text rendering | 3–4 hours |
-| Phase 6: MCP server wiring | 2–3 hours |
-| Testing & debugging | 4–6 hours |
-| **Total** | **~20–29 hours** |
-
-The CIGAR expansion (Phase 4) is the highest-risk phase — edge cases around indels at region
-boundaries and soft-clip handling tend to surface bugs. Budget extra time there.
-Given your existing `dna-vcf-mcp` / `manta-vcf-mcp` codebase, the MCP wiring (Phase 6) should
-be very fast — mostly pattern-matching what you've already built.

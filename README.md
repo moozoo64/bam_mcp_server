@@ -2,7 +2,9 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server written in Rust that accepts a genomic coordinate, queries a BAM file, and returns a text-based pileup representation suitable for reasoning by an LLM.
 
-The server runs as a stdio-based MCP process and is stateless per call.
+The server supports two transports:
+- **stdio** (default) — for direct MCP client integration
+- **HTTP** (`--sse`) — streamable-HTTP MCP transport served by axum, suitable for networked or multi-client use
 
 ## Example Output
 
@@ -51,13 +53,14 @@ Options:
   -d, --max-depth <INT>      Maximum reads to display in pileup [default: 50]
   -q, --min-mapq <INT>       Minimum mapping quality filter [default: 0]
   -Q, --min-baseq <INT>      Minimum base quality to show as uppercase [default: 20]
+      --sse <ADDR:PORT>       Run as HTTP MCP server instead of stdio (e.g. 127.0.0.1:8090)
       --debug                Write debug output to stderr
       --log-file <PATH>      Write debug log to file instead of stderr
   -h, --help                 Print help
   -V, --version              Print version
 ```
 
-All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout** exclusively.
+All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout** (stdio mode) or the HTTP response body (HTTP mode).
 
 ## MCP Tool
 
@@ -90,7 +93,7 @@ All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout
 
 ## MCP Client Configuration
 
-### Claude Desktop (`claude_desktop_config.json`)
+### Claude Desktop — stdio (`claude_desktop_config.json`)
 
 ```json
 {
@@ -106,7 +109,7 @@ All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout
 }
 ```
 
-### VS Code (`.vscode/mcp.json`)
+### VS Code — stdio (`.vscode/mcp.json`)
 
 ```json
 {
@@ -118,6 +121,21 @@ All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout
         "--bam", "/path/to/sample.bam",
         "--reference", "/path/to/reference.fa.gz"
       ]
+    }
+  }
+}
+```
+
+### VS Code — HTTP (`.vscode/mcp.json`)
+
+Start the server with `--sse 127.0.0.1:8090`, then point VS Code at it:
+
+```json
+{
+  "servers": {
+    "bam-pileup": {
+      "type": "sse",
+      "url": "http://127.0.0.1:8090/mcp"
     }
   }
 }
@@ -150,15 +168,18 @@ The pipeline per call:
 ## Testing
 
 ```bash
-# Unit tests only
+# Unit + HTTP + end-to-end integration tests (requires sample files)
 cargo test
 
-# Including integration tests against sample files
+# Including sample-file unit tests that are marked #[ignore]
 cargo test -- --include-ignored
-cargo test --test integration
+
+# Individual suites
+cargo test --test integration   # end-to-end pipeline tests
+cargo test --test http          # HTTP transport tests
 ```
 
-27 tests total: 17 unit tests (pure logic, no I/O), 7 sample-file unit tests, 3 end-to-end integration tests.
+31 tests total: 17 unit tests (10 pure logic + 7 sample-file, the latter marked `#[ignore]`), 4 HTTP transport tests, and 3 end-to-end pipeline integration tests.
 
 ## License
 

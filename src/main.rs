@@ -1,15 +1,13 @@
-mod server;
-
 use std::sync::Arc;
 
 use axum::Router;
 use bam_mcp_server::cli::{AppConfig, Args};
+use bam_mcp_server::server::PileupServer;
 use clap::Parser;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use rmcp::{ServiceExt, transport::stdio};
-use server::PileupServer;
 
 fn init_logging(args: &Args) {
     use tracing_subscriber::{EnvFilter, fmt};

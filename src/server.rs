@@ -7,11 +7,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tracing::debug;
 
-use bam_mcp_server::cli::AppConfig;
-use bam_mcp_server::pileup::expand_reads;
-use bam_mcp_server::query::query_region;
-use bam_mcp_server::reference::ReferenceReader;
-use bam_mcp_server::render::{RenderOpts, render_pileup};
+use crate::cli::AppConfig;
+use crate::pileup::expand_reads;
+use crate::query::query_region;
+use crate::reference::ReferenceReader;
+use crate::render::{RenderOpts, render_pileup};
 
 /// Input parameters for the `query_pileup` MCP tool.
 #[derive(Debug, Deserialize, JsonSchema)]
