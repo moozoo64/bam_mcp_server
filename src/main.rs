@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use axum::Router;
+use axum::extract::Request;
+use axum::response::Response;
+use axum::{Router, middleware};
 use bam_mcp_server::cli::{AppConfig, Args};
 use bam_mcp_server::server::PileupServer;
 use clap::Parser;
@@ -8,6 +10,24 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use rmcp::{ServiceExt, transport::stdio};
+
+/// Axum middleware that logs the incoming Host header and request line at DEBUG level.
+/// This makes it easy to diagnose `403 Forbidden: Host header is not allowed` errors
+/// by showing exactly what Host value the client is sending.
+async fn log_host_header(req: Request, next: middleware::Next) -> Response {
+    let host = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("<missing>");
+    tracing::debug!(
+        method = %req.method(),
+        path = %req.uri().path(),
+        host = %host,
+        "incoming HTTP request"
+    );
+    next.run(req).await
+}
 
 fn init_logging(args: &Args) {
     use tracing_subscriber::{EnvFilter, fmt};
@@ -69,7 +89,9 @@ async fn main() -> anyhow::Result<()> {
         // ── HTTP / Streamable-HTTP transport ─────────────────────────────────
         let addr = addr.clone();
 
-        let http_config = if config.allowed_hosts.is_empty() {
+        let http_config = if config.allow_all_hosts {
+            StreamableHttpServerConfig::default().disable_allowed_hosts()
+        } else if config.allowed_hosts.is_empty() {
             StreamableHttpServerConfig::default()
         } else {
             StreamableHttpServerConfig::default()
@@ -79,16 +101,34 @@ async fn main() -> anyhow::Result<()> {
         let config_arc = Arc::new(config);
 
         let service = StreamableHttpService::new(
-            move || Ok(PileupServer::from_arc(Arc::clone(&config_arc))),
+            {
+                let config_arc = Arc::clone(&config_arc);
+                move || Ok(PileupServer::from_arc(Arc::clone(&config_arc)))
+            },
             LocalSessionManager::default().into(),
             http_config,
         );
 
-        let router = Router::new().nest_service("/mcp", service);
+        let router = Router::new()
+            .nest_service("/mcp", service)
+            .layer(middleware::from_fn(log_host_header));
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         let bound = listener.local_addr()?;
+        // Always print the effective allowed-hosts list to stderr so the user can
+        // diagnose "403 Forbidden: Host header is not allowed" without --debug.
+        let effective_hosts = if config_arc.allow_all_hosts {
+            "ALL (host checking disabled)".to_string()
+        } else if config_arc.allowed_hosts.is_empty() {
+            "localhost, 127.0.0.1, ::1 (default)".to_string()
+        } else {
+            config_arc.allowed_hosts.join(", ")
+        };
         tracing::info!("HTTP MCP server listening on http://{}/mcp", bound);
         eprintln!("HTTP MCP server listening on http://{}/mcp", bound);
+        tracing::debug!("Allowed Host headers: {effective_hosts}");
+        tracing::debug!(
+            "Use --allowed-host <HOST> to allow additional hosts (repeatable), or --allow-all-hosts to disable host checking."
+        );
 
         axum::serve(listener, router)
             .with_graceful_shutdown(async {

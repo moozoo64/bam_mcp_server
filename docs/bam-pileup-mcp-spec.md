@@ -27,6 +27,8 @@ Options:
   -q, --min-mapq <INT>       Minimum mapping quality filter [default: 0]
   -Q, --min-baseq <INT>      Minimum base quality to show as uppercase [default: 20]
       --sse <ADDR:PORT>       Run as HTTP MCP server instead of stdio (e.g. 127.0.0.1:8090)
+      --allowed-host <HOST>  Allow this Host header value (repeatable; default: localhost/127.0.0.1/::1)
+      --allow-all-hosts      Disable Host header checking entirely (HTTP mode only)
       --debug                Write debug output to stderr
       --log-file <PATH>      Write debug log to file instead of stderr
   -h, --help                 Print help
@@ -40,6 +42,10 @@ Options:
   requires an additional `.fa.gz.gzi` block index
 - `--window` can be overridden per-call by the MCP tool arguments
 - All paths are validated at startup; the process exits with a clear error if any are missing
+- **Host filtering (HTTP mode):** by default only `localhost`, `127.0.0.1`, and `::1` are
+  accepted via the `Host` header (DNS rebinding protection). Use `--allowed-host <HOST>`
+  (repeatable) to permit additional values, or `--allow-all-hosts` to disable host checking
+  entirely. The effective list is logged at DEBUG level (`--debug`).
 
 ---
 
@@ -264,10 +270,18 @@ bam_mcp_server/
 ```rust
 if let Some(ref addr) = config.sse {
     // HTTP: StreamableHttpService over axum, mount at /mcp
+    let http_config = if config.allow_all_hosts {
+        StreamableHttpServerConfig::default().disable_allowed_hosts()
+    } else if config.allowed_hosts.is_empty() {
+        StreamableHttpServerConfig::default()
+    } else {
+        StreamableHttpServerConfig::default()
+            .with_allowed_hosts(config.allowed_hosts.iter().cloned())
+    };
     let service = StreamableHttpService::new(
         move || Ok(PileupServer::from_arc(Arc::clone(&config_arc))),
         LocalSessionManager::default().into(),
-        StreamableHttpServerConfig::default(),
+        http_config,
     );
     let router = Router::new().nest_service("/mcp", service);
     axum::serve(listener, router).await?;

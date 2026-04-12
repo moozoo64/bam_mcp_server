@@ -42,6 +42,11 @@ pub struct Args {
     #[arg(long = "allowed-host", value_name = "HOST")]
     pub allowed_hosts: Vec<String>,
 
+    /// Disable Host header checking entirely — allow requests from any host (HTTP mode only).
+    /// Use when clients send unexpected Host values or for development/testing.
+    #[arg(long)]
+    pub allow_all_hosts: bool,
+
     /// Enable debug logging to stderr
     #[arg(long)]
     pub debug: bool,
@@ -62,6 +67,7 @@ pub struct AppConfig {
     pub min_baseq: u8,
     pub sse: Option<String>,
     pub allowed_hosts: Vec<String>,
+    pub allow_all_hosts: bool,
     pub debug: bool,
     pub log_file: Option<PathBuf>,
 }
@@ -145,6 +151,7 @@ impl TryFrom<Args> for AppConfig {
             min_baseq: args.min_baseq,
             sse: args.sse,
             allowed_hosts: args.allowed_hosts,
+            allow_all_hosts: args.allow_all_hosts,
             debug: args.debug,
             log_file: args.log_file,
         })

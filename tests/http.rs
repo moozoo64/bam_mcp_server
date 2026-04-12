@@ -29,6 +29,7 @@ fn make_config() -> AppConfig {
         min_baseq: 20,
         sse: None,
         allowed_hosts: vec![],
+        allow_all_hosts: false,
         debug: false,
         log_file: None,
     }

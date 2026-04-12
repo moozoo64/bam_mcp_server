@@ -58,6 +58,7 @@ Options:
   -Q, --min-baseq <INT>      Minimum base quality to show as uppercase [default: 20]
       --sse <ADDR:PORT>       Run as HTTP MCP server instead of stdio (e.g. 127.0.0.1:8090)
       --allowed-host <HOST>  Allow this Host header value for remote access (repeatable; default: localhost/127.0.0.1/::1)
+      --allow-all-hosts      Disable Host header checking entirely — allow any host (HTTP mode only)
       --debug                Write debug output to stderr
       --log-file <PATH>      Write debug log to file instead of stderr
   -h, --help                 Print help
@@ -79,7 +80,7 @@ All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout
 | `window`      | integer |          | Half-width of region in bp (overrides `--window`) |
 | `min_mapq`    | integer |          | Minimum mapping quality (overrides `--min-mapq`) |
 | `show_strand` | boolean |          | Show strand orientation per read [default: true] |
-| `show_mapq`   | boolean |          | Show mapping quality per read [default: true] |
+| `show_mapq`   | boolean |          | Show mapping quality per read [default: true] |--allow-all-hosts
 
 **Output:** A single `text` content block containing the pileup as a UTF-8 string.
 
@@ -142,7 +143,11 @@ Returns the full README for this server, including usage instructions, tool desc
 Start the server on the remote host:
 
 ```bash
+# Allow a specific hostname (recommended)
 bam_mcp_server --bam /path/to/sample.bam --reference /path/to/reference.fa.gz --sse 0.0.0.0:8090 --allowed-host <remote-host>
+
+# Or disable host checking entirely (e.g. when the client sends an unexpected Host value)
+bam_mcp_server --bam /path/to/sample.bam --reference /path/to/reference.fa.gz --sse 0.0.0.0:8090 --allow-all-hosts
 ```
 
 Then configure Claude Desktop on your local machine:
