@@ -103,7 +103,7 @@ fn render_read_line(
         // Build the symbol(s) for this slot.
         let sym = match &ar.bases[i] {
             None => " ".to_string(),
-            Some(PileupBase::Match) => ".".to_string(),
+            Some(PileupBase::Match { .. }) => ".".to_string(),
             Some(PileupBase::Deletion) => "-".to_string(),
             Some(PileupBase::Mismatch { base, qual }) => {
                 let ch = if *qual >= opts.min_baseq {
@@ -148,6 +148,59 @@ fn render_read_line(
     out
 }
 
+fn render_bq_section(
+    reads: &[AlignedRead],
+    query_offset: usize,
+    query_pos: i64,
+    opts: &RenderOpts,
+) -> String {
+    // Collect (read_idx, is_reverse, bq) for reads with a base call at query_offset.
+    let mut entries: Vec<(usize, bool, u8)> = reads
+        .iter()
+        .enumerate()
+        .filter_map(|(i, ar)| match &ar.bases[query_offset] {
+            Some(PileupBase::Match { qual }) => Some((i, ar.record.is_reverse, *qual)),
+            Some(PileupBase::Mismatch { qual, .. }) => Some((i, ar.record.is_reverse, *qual)),
+            _ => None,
+        })
+        .collect();
+
+    // Sort: reverse-strand (-) first, then forward (+); stable preserves read-index order within group.
+    entries.sort_by_key(|&(_, is_rev, _)| if is_rev { 0u8 } else { 1u8 });
+
+    let header = format!(
+        "BQ    {}:{}  (reads spanning query position, sorted by strand)",
+        opts.chrom,
+        format_with_commas(query_pos),
+    );
+
+    if entries.is_empty() {
+        return format!("{}\n\n      (no reads)", header);
+    }
+
+    let bq_values: Vec<u8> = entries.iter().map(|&(_, _, bq)| bq).collect();
+    let mean = bq_values.iter().map(|&b| b as f64).sum::<f64>() / bq_values.len() as f64;
+    let min = *bq_values.iter().min().unwrap();
+    let max = *bq_values.iter().max().unwrap();
+
+    let col_header = "      Read    Strand   BQ-at-query";
+    let rows: Vec<String> = entries
+        .iter()
+        .map(|&(idx, is_rev, bq)| {
+            let name = format!("R{:02}", idx + 1);
+            let strand = if is_rev { '-' } else { '+' };
+            format!("      {:<8}{:<9}{}", name, strand, bq)
+        })
+        .collect();
+
+    let stats = format!("      mean: {:.1}   min: {}   max: {}", mean, min, max);
+
+    let mut lines = vec![header, String::new(), col_header.to_string()];
+    lines.extend(rows);
+    lines.push(stats);
+    lines.join("\n")
+}
+
 fn render_footer(
     reads: &[AlignedRead],
     ref_seq: &[u8],
@@ -174,7 +227,7 @@ fn render_footer(
 
     for ar in &covered {
         match &ar.bases[query_offset] {
-            Some(PileupBase::Match) => {
+            Some(PileupBase::Match { .. }) => {
                 // Tally the reference base.
                 match ref_base {
                     b'A' => allele_a += 1,
@@ -242,6 +295,9 @@ fn render_footer(
         query_result.filtered_mapq,
         query_result.filtered_flags,
     ));
+
+    lines.push(String::new());
+    lines.push(render_bq_section(reads, query_offset, query_pos, opts));
 
     lines.join("\n")
 }
@@ -366,11 +422,11 @@ mod tests {
         let query_pos = 12i64; // offset 2
         let ar = make_ar(
             vec![
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
             ],
             false,
             60,
@@ -408,10 +464,10 @@ mod tests {
                     base: b'T',
                     qual: 30,
                 }),
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
             ],
             false,
             60,
@@ -435,10 +491,10 @@ mod tests {
                     base: b'T',
                     qual: 10,
                 }), // below min_baseq=20
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
             ],
             false,
             60,
@@ -458,11 +514,11 @@ mod tests {
         let ref_seq = b"ACGTA";
         let ar = make_ar(
             vec![
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
                 Some(PileupBase::Deletion),
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
             ],
             false,
             60,
@@ -482,7 +538,7 @@ mod tests {
         let ref_seq = b"ACGTA";
         let len = ref_seq.len();
         // Insertion of 3 after position 1
-        let mut ar = make_ar(vec![Some(PileupBase::Match); len], false, 60);
+        let mut ar = make_ar(vec![Some(PileupBase::Match { qual: 30 }); len], false, 60);
         ar.ins_after[1] = 3;
         let qr = dummy_query_result(vec![dummy_record(false, 60)]);
         let output = render_pileup(&[ar], ref_seq, 10, 10, &qr, &default_opts());
@@ -502,9 +558,9 @@ mod tests {
             vec![
                 None,
                 None,
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
-                Some(PileupBase::Match),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
+                Some(PileupBase::Match { qual: 30 }),
             ],
             false,
             60,
@@ -530,9 +586,9 @@ mod tests {
         let query_pos = 12i64; // offset 2
 
         // 2 reads with G (match), 1 read with T (mismatch high qual)
-        let ar1 = make_ar(vec![Some(PileupBase::Match); 5], false, 60);
-        let ar2 = make_ar(vec![Some(PileupBase::Match); 5], false, 60);
-        let mut bases3 = vec![Some(PileupBase::Match); 5];
+        let ar1 = make_ar(vec![Some(PileupBase::Match { qual: 30 }); 5], false, 60);
+        let ar2 = make_ar(vec![Some(PileupBase::Match { qual: 30 }); 5], false, 60);
+        let mut bases3 = vec![Some(PileupBase::Match { qual: 30 }); 5];
         bases3[2] = Some(PileupBase::Mismatch {
             base: b'T',
             qual: 30,
@@ -570,5 +626,51 @@ mod tests {
             "Expected T: 1 in footer: {}",
             output
         );
+    }
+
+    #[test]
+    fn test_bq_section() {
+        let ref_seq = b"ACGTA";
+        let region_start = 10i64;
+        let query_pos = 12i64; // offset 2
+
+        // One reverse-strand read (bq=38), one forward-strand read (bq=40), both Match at offset 2.
+        let mut bases_rev = vec![Some(PileupBase::Match { qual: 30 }); 5];
+        bases_rev[2] = Some(PileupBase::Match { qual: 38 });
+        let mut bases_fwd = vec![Some(PileupBase::Match { qual: 30 }); 5];
+        bases_fwd[2] = Some(PileupBase::Match { qual: 40 });
+        let ar_rev = make_ar(bases_rev, true, 60); // R01, reverse
+        let ar_fwd = make_ar(bases_fwd, false, 60); // R02, forward
+
+        let qr = dummy_query_result(vec![dummy_record(true, 60), dummy_record(false, 60)]);
+        let output = render_pileup(
+            &[ar_rev, ar_fwd],
+            ref_seq,
+            region_start,
+            query_pos,
+            &qr,
+            &default_opts(),
+        );
+
+        // BQ header must be present.
+        assert!(
+            output.contains("BQ    chr1:12"),
+            "BQ header missing: {}",
+            output
+        );
+        // Reverse-strand read (R01, bq=38) should appear before forward-strand (R02, bq=40).
+        let bq_header_pos = output.find("BQ    ").unwrap();
+        let rev_pos = output.find("R01     -").unwrap();
+        let fwd_pos = output.find("R02     +").unwrap();
+        assert!(rev_pos > bq_header_pos, "Rev row should be after BQ header");
+        assert!(rev_pos < fwd_pos, "Rev row should come before fwd row");
+        // Stats line: mean=39.0, min=38, max=40.
+        assert!(
+            output.contains("mean: 39.0"),
+            "Expected mean: 39.0: {}",
+            output
+        );
+        assert!(output.contains("min: 38"), "Expected min: 38: {}", output);
+        assert!(output.contains("max: 40"), "Expected max: 40: {}", output);
     }
 }

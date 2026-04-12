@@ -4,7 +4,7 @@ use crate::query::{CigarOp, ReadRecord};
 #[derive(Debug, Clone, PartialEq)]
 pub enum PileupBase {
     /// Read base matches the reference.
-    Match,
+    Match { qual: u8 },
     /// Read base differs from the reference.
     Mismatch { base: u8, qual: u8 },
     /// A deletion in the read spans this reference position.
@@ -65,7 +65,7 @@ fn expand_one(
                         let ref_base = ref_seq[ri];
                         bases[ri] = Some(
                             if base.to_ascii_uppercase() == ref_base.to_ascii_uppercase() {
-                                PileupBase::Match
+                                PileupBase::Match { qual }
                             } else {
                                 PileupBase::Mismatch { base, qual }
                             },
@@ -147,7 +147,7 @@ mod tests {
         let ar = &result[0];
         assert_eq!(ar.bases.len(), 5);
         for b in &ar.bases {
-            assert_eq!(b, &Some(PileupBase::Match));
+            assert_eq!(b, &Some(PileupBase::Match { qual: 30 }));
         }
         assert!(ar.ins_after.iter().all(|&x| x == 0));
     }
@@ -159,8 +159,8 @@ mod tests {
         rec.base_quals[2] = 25;
         let result = expand_reads(&[rec], REF, REGION_START, REGION_END);
         let ar = &result[0];
-        assert_eq!(ar.bases[0], Some(PileupBase::Match)); // A==A
-        assert_eq!(ar.bases[1], Some(PileupBase::Match)); // C==C
+        assert_eq!(ar.bases[0], Some(PileupBase::Match { qual: 30 })); // A==A
+        assert_eq!(ar.bases[1], Some(PileupBase::Match { qual: 30 })); // C==C
         assert_eq!(
             ar.bases[2],
             Some(PileupBase::Mismatch {
@@ -168,8 +168,8 @@ mod tests {
                 qual: 25
             })
         );
-        assert_eq!(ar.bases[3], Some(PileupBase::Match)); // T==T
-        assert_eq!(ar.bases[4], Some(PileupBase::Match)); // A==A
+        assert_eq!(ar.bases[3], Some(PileupBase::Match { qual: 30 })); // T==T
+        assert_eq!(ar.bases[4], Some(PileupBase::Match { qual: 30 })); // A==A
     }
 
     #[test]
@@ -183,11 +183,11 @@ mod tests {
         );
         let result = expand_reads(&[rec], REF, REGION_START, REGION_END);
         let ar = &result[0];
-        assert_eq!(ar.bases[0], Some(PileupBase::Match)); // pos10: A==A
-        assert_eq!(ar.bases[1], Some(PileupBase::Match)); // pos11: C==C
+        assert_eq!(ar.bases[0], Some(PileupBase::Match { qual: 30 })); // pos10: A==A
+        assert_eq!(ar.bases[1], Some(PileupBase::Match { qual: 30 })); // pos11: C==C
         assert_eq!(ar.bases[2], Some(PileupBase::Deletion)); // pos12
-        assert_eq!(ar.bases[3], Some(PileupBase::Match)); // pos13: T==T
-        assert_eq!(ar.bases[4], Some(PileupBase::Match)); // pos14: A==A
+        assert_eq!(ar.bases[3], Some(PileupBase::Match { qual: 30 })); // pos13: T==T
+        assert_eq!(ar.bases[4], Some(PileupBase::Match { qual: 30 })); // pos14: A==A
     }
 
     #[test]
@@ -201,12 +201,12 @@ mod tests {
         );
         let result = expand_reads(&[rec], REF, REGION_START, REGION_END);
         let ar = &result[0];
-        assert_eq!(ar.bases[0], Some(PileupBase::Match)); // pos10: A==A
-        assert_eq!(ar.bases[1], Some(PileupBase::Match)); // pos11: C==C
+        assert_eq!(ar.bases[0], Some(PileupBase::Match { qual: 30 })); // pos10: A==A
+        assert_eq!(ar.bases[1], Some(PileupBase::Match { qual: 30 })); // pos11: C==C
         assert_eq!(ar.ins_after[1], 3); // 3 inserted bases after region index 1
-        assert_eq!(ar.bases[2], Some(PileupBase::Match)); // pos12: G==G
-        assert_eq!(ar.bases[3], Some(PileupBase::Match)); // pos13: T==T
-        assert_eq!(ar.bases[4], Some(PileupBase::Match)); // pos14: A==A
+        assert_eq!(ar.bases[2], Some(PileupBase::Match { qual: 30 })); // pos12: G==G
+        assert_eq!(ar.bases[3], Some(PileupBase::Match { qual: 30 })); // pos13: T==T
+        assert_eq!(ar.bases[4], Some(PileupBase::Match { qual: 30 })); // pos14: A==A
     }
 
     #[test]
@@ -221,7 +221,7 @@ mod tests {
         let result = expand_reads(&[rec], REF, REGION_START, REGION_END);
         let ar = &result[0];
         for b in &ar.bases {
-            assert_eq!(b, &Some(PileupBase::Match));
+            assert_eq!(b, &Some(PileupBase::Match { qual: 30 }));
         }
     }
 
@@ -233,7 +233,7 @@ mod tests {
         let result = expand_reads(&[rec], REF, REGION_START, REGION_END);
         let ar = &result[0];
         for b in &ar.bases {
-            assert_eq!(b, &Some(PileupBase::Match));
+            assert_eq!(b, &Some(PileupBase::Match { qual: 30 }));
         }
     }
 
@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(ar.bases[0], None); // pos10
         assert_eq!(ar.bases[1], None); // pos11
         assert_eq!(ar.bases[2], None); // pos12
-        assert_eq!(ar.bases[3], Some(PileupBase::Match)); // pos13: T==T
-        assert_eq!(ar.bases[4], Some(PileupBase::Match)); // pos14: A==A
+        assert_eq!(ar.bases[3], Some(PileupBase::Match { qual: 30 })); // pos13: T==T
+        assert_eq!(ar.bases[4], Some(PileupBase::Match { qual: 30 })); // pos14: A==A
     }
 }
