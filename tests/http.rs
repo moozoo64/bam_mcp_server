@@ -28,6 +28,7 @@ fn make_config() -> AppConfig {
         min_mapq: 0,
         min_baseq: 20,
         sse: None,
+        allowed_hosts: vec![],
         debug: false,
         log_file: None,
     }

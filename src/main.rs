@@ -68,12 +68,20 @@ async fn main() -> anyhow::Result<()> {
     if let Some(ref addr) = config.sse {
         // ── HTTP / Streamable-HTTP transport ─────────────────────────────────
         let addr = addr.clone();
+
+        let http_config = if config.allowed_hosts.is_empty() {
+            StreamableHttpServerConfig::default()
+        } else {
+            StreamableHttpServerConfig::default()
+                .with_allowed_hosts(config.allowed_hosts.iter().cloned())
+        };
+
         let config_arc = Arc::new(config);
 
         let service = StreamableHttpService::new(
             move || Ok(PileupServer::from_arc(Arc::clone(&config_arc))),
             LocalSessionManager::default().into(),
-            StreamableHttpServerConfig::default(),
+            http_config,
         );
 
         let router = Router::new().nest_service("/mcp", service);

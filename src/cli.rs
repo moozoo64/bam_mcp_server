@@ -36,6 +36,12 @@ pub struct Args {
     #[arg(long, value_name = "ADDR:PORT")]
     pub sse: Option<String>,
 
+    /// Allowed Host header values for DNS rebinding protection (HTTP mode only).
+    /// Defaults to localhost/127.0.0.1/::1. Add your server's IP or hostname for remote access.
+    /// Can be specified multiple times: --allowed-host 192.168.1.100 --allowed-host myhost.example.com
+    #[arg(long = "allowed-host", value_name = "HOST")]
+    pub allowed_hosts: Vec<String>,
+
     /// Enable debug logging to stderr
     #[arg(long)]
     pub debug: bool,
@@ -55,6 +61,7 @@ pub struct AppConfig {
     pub min_mapq: u8,
     pub min_baseq: u8,
     pub sse: Option<String>,
+    pub allowed_hosts: Vec<String>,
     pub debug: bool,
     pub log_file: Option<PathBuf>,
 }
@@ -137,6 +144,7 @@ impl TryFrom<Args> for AppConfig {
             min_mapq: args.min_mapq,
             min_baseq: args.min_baseq,
             sse: args.sse,
+            allowed_hosts: args.allowed_hosts,
             debug: args.debug,
             log_file: args.log_file,
         })

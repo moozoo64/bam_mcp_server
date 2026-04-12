@@ -57,6 +57,7 @@ Options:
   -q, --min-mapq <INT>       Minimum mapping quality filter [default: 0]
   -Q, --min-baseq <INT>      Minimum base quality to show as uppercase [default: 20]
       --sse <ADDR:PORT>       Run as HTTP MCP server instead of stdio (e.g. 127.0.0.1:8090)
+      --allowed-host <HOST>  Allow this Host header value for remote access (repeatable; default: localhost/127.0.0.1/::1)
       --debug                Write debug output to stderr
       --log-file <PATH>      Write debug log to file instead of stderr
   -h, --help                 Print help
@@ -141,7 +142,7 @@ Returns the full README for this server, including usage instructions, tool desc
 Start the server on the remote host:
 
 ```bash
-bam_mcp_server --bam /path/to/sample.bam --reference /path/to/reference.fa.gz --sse 0.0.0.0:8090
+bam_mcp_server --bam /path/to/sample.bam --reference /path/to/reference.fa.gz --sse 0.0.0.0:8090 --allowed-host <remote-host>
 ```
 
 Then configure Claude Desktop on your local machine:
