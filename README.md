@@ -134,6 +134,36 @@ Returns the full README for this server, including usage instructions, tool desc
 }
 ```
 
+### Claude Desktop — remote via `mcp-remote` (`claude_desktop_config.json`)
+
+[`mcp-remote`](https://github.com/geelen/mcp-remote) acts as a local stdio proxy that forwards to a remote HTTP MCP server, bridging Claude Desktop's stdio-only support to an HTTP endpoint.
+
+Start the server on the remote host:
+
+```bash
+bam_mcp_server --bam /path/to/sample.bam --reference /path/to/reference.fa.gz --sse 0.0.0.0:8090
+```
+
+Then configure Claude Desktop on your local machine:
+
+```json
+{
+  "mcpServers": {
+    "bam-pileup": {
+      "command": "npx",
+      "args": [
+        "mcp-remote@latest",
+        "http://<remote-host>:8090/mcp"
+      ]
+    }
+  }
+}
+```
+
+> **Use `mcp-remote@latest`:** This server uses the [streamable-HTTP MCP transport](https://modelcontextprotocol.io/docs/concepts/transports#streamable-http), which supersedes the older SSE transport. Older versions of `mcp-remote` only supported the legacy SSE transport and will fail to connect. Using `mcp-remote@latest` ensures you have support for the streamable-HTTP transport.
+
+> **Security note:** The server has no built-in authentication. If exposed beyond localhost, place it behind a reverse proxy (e.g. nginx or Caddy) with TLS and authentication.
+
 ### VS Code — stdio (`.vscode/mcp.json`)
 
 ```json
@@ -164,6 +194,33 @@ Start the server with `--sse 127.0.0.1:8090`, then point VS Code at it:
     }
   }
 }
+```
+
+### Testing the HTTP transport with curl
+
+The MCP protocol requires a 3-step handshake before sending requests. The server returns SSE-formatted responses (`text/event-stream`) — look for the `data: {…}` line for the JSON payload.
+
+```bash
+# Step 1: Initialize — capture the session ID from the response header
+SESSION_ID=$(curl -s -D - -X POST http://localhost:8090/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"0.1"}}}' \
+  | grep -i "mcp-session-id" | awk '{print $2}' | tr -d '\r')
+
+# Step 2: Send the initialized notification (server responds 202, no body)
+curl -s -X POST http://localhost:8090/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}'
+
+# Step 3: List available tools
+curl -s -X POST http://localhost:8090/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Mcp-Session-Id: $SESSION_ID" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 ```
 
 ## Architecture
