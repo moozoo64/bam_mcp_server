@@ -28,6 +28,16 @@ COV   5x at chr7:117,548,975
       +strand: 3  -strand: 2
       MQ_mean: 59.4  MQ_min: 58
       Reads shown: 5  Reads filtered (MAPQ): 0  Reads filtered (dup/qcfail): 0
+
+BQ    chr7:117,548,975  (reads spanning query position, sorted by strand)
+
+      Read    Strand   BQ-at-query
+      R04     -        38
+      R05     -        36
+      R01     +        40
+      R02     +        37
+      R03     +        39
+      mean: 38.0   min: 36   max: 40
 ```
 
 ## Requirements
