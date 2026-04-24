@@ -7,7 +7,8 @@ use bam_mcp_server::cli::{AppConfig, Args};
 use bam_mcp_server::server::PileupServer;
 use clap::Parser;
 use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    StreamableHttpServerConfig, StreamableHttpService,
+    session::local::{LocalSessionManager, SessionConfig},
 };
 use rmcp::{ServiceExt, transport::stdio};
 
@@ -100,12 +101,17 @@ async fn main() -> anyhow::Result<()> {
 
         let config_arc = Arc::new(config);
 
+        let mut session_config = SessionConfig::default();
+        session_config.keep_alive = Some(std::time::Duration::from_secs(3600));
+        let mut session_manager = LocalSessionManager::default();
+        session_manager.session_config = session_config;
+
         let service = StreamableHttpService::new(
             {
                 let config_arc = Arc::clone(&config_arc);
                 move || Ok(PileupServer::from_arc(Arc::clone(&config_arc)))
             },
-            LocalSessionManager::default().into(),
+            Arc::new(session_manager),
             http_config,
         );
 

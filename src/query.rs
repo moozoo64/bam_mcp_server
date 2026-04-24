@@ -282,7 +282,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires sample BAM file"]
     fn test_query_known_region() {
         // Dynamically pick the first chromosome from the BAM header so the
         // test is independent of chr-prefix naming conventions.
@@ -325,7 +324,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires sample BAM file"]
     fn test_query_invalid_chrom() {
         let err = query_region(&sample_bam(), "nonexistent_chrXYZ99", 0, 100, 0, 50)
             .expect_err("should fail for unknown chromosome");
@@ -337,7 +335,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires sample BAM file"]
     fn test_filter_mapq() {
         // Open BAM to get first chrom name
         let mut reader = bam::io::indexed_reader::Builder::default()

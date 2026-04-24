@@ -82,13 +82,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires sample FASTA file"]
     fn test_open() {
         ReferenceReader::open(&sample_fasta()).expect("should open sample FASTA");
     }
 
     #[test]
-    #[ignore = "requires sample FASTA file"]
     fn test_fetch_chr1() {
         let mut reader = ReferenceReader::open(&sample_fasta()).unwrap();
         let bases = reader
@@ -105,7 +103,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires sample FASTA file"]
     fn test_fetch_zero_start() {
         let mut reader = ReferenceReader::open(&sample_fasta()).unwrap();
         let bases = reader.fetch("chr1", 0, 1).expect("should fetch 1 base");
@@ -113,7 +110,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires sample FASTA file"]
     fn test_fetch_invalid_chrom() {
         let mut reader = ReferenceReader::open(&sample_fasta()).unwrap();
         let result = reader.fetch("nonexistent_chrXYZ", 0, 100);
