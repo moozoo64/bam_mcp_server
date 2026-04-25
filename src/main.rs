@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
         let config_arc = Arc::new(config);
 
         let mut session_config = SessionConfig::default();
-        session_config.keep_alive = Some(std::time::Duration::from_secs(3600));
+        session_config.keep_alive = Some(std::time::Duration::from_secs(36000)); // 10 hours
         let mut session_manager = LocalSessionManager::default();
         session_manager.session_config = session_config;
 
