@@ -42,38 +42,39 @@ fn render_pos_ruler(region_start: i64, region_end: i64, query_offset: usize) -> 
     let start_str = format!("{}", region_start + 1);
     let end_str = format!("{}", region_end);
 
-    // Mark the query position with `[*]` on the POS ruler line.
-    // Build a character array for the content.
     let mut chars: Vec<u8> = vec![b' '; content_width];
 
-    // Place start label at position 0 (accounting for bracket shift).
-    for (i, b) in start_str.bytes().enumerate() {
-        if i < content_width {
-            chars[i] = b;
-        }
+    // `[*]` marks the query column and always wins. Ref index i sits at column
+    // i before the query and i+2 after it, so the bracket spans
+    // query_offset..=query_offset+2.
+    let q_col = query_offset;
+    let (q_first, q_last) = (q_col, q_col + 2);
+    if q_last < content_width {
+        chars[q_first..=q_last].copy_from_slice(b"[*]");
     }
 
-    // Place `[*]` at the query offset (shifted by 1 if query_offset > 0 due to bracket).
-    // The content column for ref index i is i when i < query_offset, or i+2 when i > query_offset,
-    // and i..i+2 when i == query_offset.
-    let q_col = query_offset; // bracket occupies q_col, q_col+1, q_col+2
-    if q_col < content_width.saturating_sub(2) {
-        chars[q_col] = b'[';
-        chars[q_col + 1] = b'*';
-        chars[q_col + 2] = b']';
+    // Start label, left-aligned, only if it leaves a space before `[*]`.
+    // Otherwise it is omitted rather than overwritten; the Region line always
+    // shows the full range.
+    let start_fits = start_str.len() < q_first;
+    if start_fits {
+        chars[..start_str.len()].copy_from_slice(start_str.as_bytes());
     }
 
-    // Right-align end label at the far right of the content.
-    let end_bytes = end_str.as_bytes();
-    let end_start = content_width.saturating_sub(end_bytes.len());
-    for (i, b) in end_bytes.iter().enumerate() {
-        let col = end_start + i;
-        if col < content_width {
-            chars[col] = *b;
-        }
+    // End label, right-aligned, only if it leaves a space after `[*]` and
+    // after the start label.
+    let occupied_until = if start_fits {
+        q_last.max(start_str.len() - 1)
+    } else {
+        q_last
+    };
+    if let Some(end_col) = content_width.checked_sub(end_str.len())
+        && end_col > occupied_until + 1
+    {
+        chars[end_col..].copy_from_slice(end_str.as_bytes());
     }
 
-    format!("POS   {}", String::from_utf8_lossy(&chars))
+    format!("POS   {}", String::from_utf8_lossy(&chars).trim_end())
 }
 
 fn render_ref_line(ref_seq: &[u8], query_offset: usize) -> String {
@@ -660,11 +661,52 @@ mod tests {
             output.contains("Region: chr1:11-15  (5bp window)"),
             "{output}"
         );
-        let pos_line = output.lines().find(|l| l.starts_with("POS")).unwrap();
-        assert!(pos_line.starts_with("POS   11"), "{pos_line:?}");
-        assert!(pos_line.trim_end().ends_with("15"), "{pos_line:?}");
+        // POS ruler numbers are covered by the test_pos_ruler_* tests; this
+        // 5bp window is too narrow to show them.
         assert!(output.contains("COV   1x at chr1:13"), "{output}");
         assert!(output.contains("BQ    chr1:13"), "{output}");
+    }
+
+    #[test]
+    fn test_pos_ruler_normal() {
+        // 0-based [100, 121), query at offset 10 → labels 101 .. 121.
+        let line = render_pos_ruler(100, 121, 10);
+        assert_eq!(
+            line,
+            format!("POS   101{}[*]{}121", " ".repeat(7), " ".repeat(7))
+        );
+        // Same width as the REF line content (region_len + 2).
+        assert_eq!(line.len(), "POS   ".len() + 21 + 2);
+    }
+
+    /// Clipped window at the end of chr1: labels must not overwrite each other
+    /// or the `[*]` marker. Previously this rendered "POS   248956248956422".
+    #[test]
+    fn test_pos_ruler_contig_end_no_overlap() {
+        // 0-based [248956409, 248956422), query at offset 10 (1-based 248,956,420).
+        let line = render_pos_ruler(248_956_409, 248_956_422, 10);
+        let content = &line["POS   ".len()..];
+        assert_eq!(&content[10..13], "[*]", "{line:?}");
+        // The 9-digit start label fits before `[*]` with a space; the end
+        // label has no room after `[*]`, so it is omitted.
+        assert_eq!(line, "POS   248956410 [*]");
+    }
+
+    #[test]
+    fn test_pos_ruler_query_at_first_base() {
+        // Query at offset 0: no room for the start label; end label still shown.
+        let line = render_pos_ruler(0, 13, 0);
+        assert_eq!(line, format!("POS   [*]{}13", " ".repeat(10)));
+    }
+
+    #[test]
+    fn test_pos_ruler_keeps_one_label_when_only_one_fits() {
+        // Room before `[*]` for the start label but not after it for the end label.
+        let line = render_pos_ruler(999, 1013, 12);
+        let content = &line["POS   ".len()..];
+        assert!(content.starts_with("1000 "), "{line:?}");
+        assert_eq!(&content[12..15], "[*]", "{line:?}");
+        assert!(!content.contains("1013"), "{line:?}");
     }
 
     #[test]
