@@ -11,6 +11,37 @@ use rmcp::transport::streamable_http_server::{
     session::local::{LocalSessionManager, SessionConfig},
 };
 use rmcp::{ServiceExt, transport::stdio};
+use tokio_util::sync::CancellationToken;
+
+/// Resolves when the process receives Ctrl+C (SIGINT) or, on Unix, SIGTERM.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!("failed to install Ctrl+C handler: {e}");
+            std::future::pending::<()>().await;
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::error!("failed to install SIGTERM handler: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => tracing::info!("Received Ctrl+C, shutting down"),
+        _ = terminate => tracing::info!("Received SIGTERM, shutting down"),
+    }
+}
 
 /// Axum middleware that logs the incoming Host header and request line at DEBUG level.
 /// This makes it easy to diagnose `403 Forbidden: Host header is not allowed` errors
@@ -71,8 +102,19 @@ fn init_logging(args: &Args) {
     }
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run());
+    // Tokio's stdin is read on a blocking thread that cannot be interrupted, so a
+    // normal runtime drop would hang until the client sends more input. All async
+    // cleanup has already finished by this point, so don't wait for it.
+    runtime.shutdown_background();
+    result
+}
+
+async fn run() -> anyhow::Result<()> {
     let args = Args::parse();
     init_logging(&args);
 
@@ -90,6 +132,10 @@ async fn main() -> anyhow::Result<()> {
         // ── HTTP / Streamable-HTTP transport ─────────────────────────────────
         let addr = addr.clone();
 
+        // Cancelling this token closes all open MCP sessions / SSE streams, which
+        // lets axum's graceful shutdown finish instead of waiting on them forever.
+        let shutdown_token = CancellationToken::new();
+
         let http_config = if config.allow_all_hosts {
             StreamableHttpServerConfig::default().disable_allowed_hosts()
         } else if config.allowed_hosts.is_empty() {
@@ -97,7 +143,8 @@ async fn main() -> anyhow::Result<()> {
         } else {
             StreamableHttpServerConfig::default()
                 .with_allowed_hosts(config.allowed_hosts.iter().cloned())
-        };
+        }
+        .with_cancellation_token(shutdown_token.clone());
 
         let config_arc = Arc::new(config);
 
@@ -136,19 +183,52 @@ async fn main() -> anyhow::Result<()> {
             "Use --allowed-host <HOST> to allow additional hosts (repeatable), or --allow-all-hosts to disable host checking."
         );
 
+        tokio::spawn({
+            let shutdown_token = shutdown_token.clone();
+            async move {
+                shutdown_signal().await;
+                eprintln!("Shutting down HTTP MCP server...");
+                shutdown_token.cancel();
+                // A second Ctrl+C forces an immediate exit if draining hangs.
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    eprintln!("Forced shutdown");
+                    std::process::exit(130);
+                }
+            }
+        });
+
         axum::serve(listener, router)
-            .with_graceful_shutdown(async {
-                tokio::signal::ctrl_c()
-                    .await
-                    .expect("failed to install Ctrl+C handler");
-                tracing::info!("Shutting down");
-            })
+            .with_graceful_shutdown(shutdown_token.cancelled_owned())
             .await?;
+        tracing::info!("HTTP MCP server stopped");
     } else {
         // ── stdio transport (default MCP) ─────────────────────────────────────
         let server = PileupServer::new(config);
-        let service = server.serve(stdio()).await?;
-        service.waiting().await?;
+        // Install the signal handler before the handshake: `serve` blocks until
+        // the client sends `initialize`, and Ctrl+C must work during that wait too.
+        let shutdown = shutdown_signal();
+        tokio::pin!(shutdown);
+        let service = tokio::select! {
+            res = server.serve(stdio()) => res?,
+            _ = &mut shutdown => {
+                tracing::info!("stdio MCP server stopped before initialization");
+                return Ok(());
+            }
+        };
+        let token = service.cancellation_token();
+        let waiting = service.waiting();
+        tokio::pin!(waiting);
+        tokio::select! {
+            res = &mut waiting => {
+                res?;
+            }
+            _ = &mut shutdown => {
+                token.cancel();
+                // Let the service finish its cleanup after cancellation.
+                waiting.await?;
+            }
+        }
+        tracing::info!("stdio MCP server stopped");
     }
 
     Ok(())
