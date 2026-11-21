@@ -18,12 +18,16 @@ pub struct RenderOpts {
 
 // ── Section renderers ────────────────────────────────────────────────────────
 
+// Coordinates are passed around 0-based half-open, but every label in the
+// output is 1-based (inclusive), matching the `position` input, VCF, IGV and
+// samtools. For a 0-based half-open `[start, end)` that is `start+1 ..= end`.
+
 fn render_header(opts: &RenderOpts, region_start: i64, region_end: i64) -> String {
     let len = region_end - region_start;
     format!(
         "Region: {}:{}-{}  ({}bp window)  BAM: {}",
         opts.chrom,
-        format_with_commas(region_start),
+        format_with_commas(region_start + 1),
         format_with_commas(region_end),
         len,
         opts.bam_name,
@@ -35,7 +39,7 @@ fn render_pos_ruler(region_start: i64, region_end: i64, query_offset: usize) -> 
     // Content width = region_len + 2 (room for the `[X]` bracket at query_offset)
     let content_width = region_len + 2;
 
-    let start_str = format!("{}", region_start);
+    let start_str = format!("{}", region_start + 1);
     let end_str = format!("{}", region_end);
 
     // Mark the query position with `[*]` on the POS ruler line.
@@ -171,7 +175,7 @@ fn render_bq_section(
     let header = format!(
         "BQ    {}:{}  (shown reads spanning query position, sorted by strand)",
         opts.chrom,
-        format_with_commas(query_pos),
+        format_with_commas(query_pos + 1),
     );
 
     if entries.is_empty() {
@@ -241,7 +245,7 @@ fn render_footer(
         "COV   {}x at {}:{}",
         site.depth,
         opts.chrom,
-        format_with_commas(query_pos),
+        format_with_commas(query_pos + 1),
     ));
     if !allele_lines.is_empty() {
         lines.push(format!("      {}", allele_lines.join("  ")));
@@ -637,6 +641,32 @@ mod tests {
         );
     }
 
+    /// All labels are 1-based inclusive: 0-based region [10, 15) with the query
+    /// at 0-based 12 is displayed as 11-15 with the query at 13.
+    #[test]
+    fn test_labels_are_one_based() {
+        let ref_seq = b"ACGTA";
+        let ar = make_ar(vec![Some(PileupBase::Match { qual: 30 }); 5], false, 60);
+        let mut qr = dummy_query_result(vec![dummy_record(false, 60)]);
+        qr.site = SiteStats {
+            depth: 1,
+            g: 1,
+            fwd: 1,
+            ..Default::default()
+        };
+        let output = render_pileup(&[ar], ref_seq, 10, 12, &qr, &default_opts());
+
+        assert!(
+            output.contains("Region: chr1:11-15  (5bp window)"),
+            "{output}"
+        );
+        let pos_line = output.lines().find(|l| l.starts_with("POS")).unwrap();
+        assert!(pos_line.starts_with("POS   11"), "{pos_line:?}");
+        assert!(pos_line.trim_end().ends_with("15"), "{pos_line:?}");
+        assert!(output.contains("COV   1x at chr1:13"), "{output}");
+        assert!(output.contains("BQ    chr1:13"), "{output}");
+    }
+
     #[test]
     fn test_bq_section() {
         let ref_seq = b"ACGTA";
@@ -663,7 +693,7 @@ mod tests {
 
         // BQ header must be present.
         assert!(
-            output.contains("BQ    chr1:12"),
+            output.contains("BQ    chr1:13"),
             "BQ header missing: {}",
             output
         );

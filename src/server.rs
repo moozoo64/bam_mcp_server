@@ -24,7 +24,8 @@ pub struct QueryPileupParams {
     /// 1-based genomic position to query
     pub position: i64,
 
-    /// Half-width of region around position in bp (10–500). Overrides --window CLI default.
+    /// Half-width of region in bp (10–500): this many bases are shown on each side of
+    /// the queried base, 2*window+1 in total. Overrides --window CLI default.
     pub window: Option<u32>,
 
     /// Minimum mapping quality (0–60). Overrides --min-mapq CLI default.
@@ -163,7 +164,9 @@ impl PileupServer {
         // Convert 1-based input position to 0-based internal coords.
         let query_pos_0 = params.position - 1;
         let region_start = (query_pos_0 - window as i64).max(0);
-        let region_end = (query_pos_0 + window as i64).min(contig_len);
+        // `window` is a half-width: `window` bases each side of the queried base,
+        // 2*window+1 in total (fewer only where clipped at a contig end).
+        let region_end = (query_pos_0 + window as i64 + 1).min(contig_len);
 
         debug!(
             chrom = %params.chrom,

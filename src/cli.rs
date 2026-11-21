@@ -15,7 +15,7 @@ pub struct Args {
     #[arg(short = 'r', long)]
     pub reference: PathBuf,
 
-    /// Default window half-width in bp around query position
+    /// Default window half-width: bases shown each side of the query position
     #[arg(short = 'w', long, default_value_t = 75)]
     pub window: u32,
 

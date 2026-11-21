@@ -61,7 +61,7 @@ fn test_pipeline_chr1() {
     let query_pos_0: i64 = 10_075_i64.min(chrom_len - 200);
     let window: i64 = 75;
     let region_start = (query_pos_0 - window).max(0);
-    let region_end = query_pos_0 + window;
+    let region_end = query_pos_0 + window + 1;
 
     // 1. Reference.
     let ref_seq = ReferenceReader::open(&sample_fasta())

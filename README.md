@@ -12,7 +12,7 @@ The server supports two transports:
 ## Example Output
 
 ```
-Region: chr7:117,548,920-117,549,070  (150bp window)  BAM: sample.bam
+Region: chr7:117,548,920-117,549,070  (151bp window)  BAM: sample.bam
 
 POS   117548920                                            117549070
 REF   TGCAATCCGAATCGGCATGCCTACGATTTACGGCATGCATCGAATCGGCAT[A]GCATCGGAATCGCATGCCTACGATTTACGGCATGCATCGAATCGGCATGCCT
@@ -23,13 +23,13 @@ R03          ...................................................................
 R04   ...............................................................[G]............................................ - MQ60
 R05                 ......................................................................                         - MQ58
 
-COV   5x at chr7:117,548,975
+COV   5x at chr7:117,548,995
       A: 2 (40.0%)  G: 3 (60.0%)
       +strand: 3  -strand: 2
       MQ_mean: 59.4  MQ_min: 58
       Reads shown: 5  Reads filtered (MAPQ): 0  Reads filtered (dup/qcfail): 0
 
-BQ    chr7:117,548,975  (shown reads spanning query position, sorted by strand)
+BQ    chr7:117,548,995  (shown reads spanning query position, sorted by strand)
 
       Read    Strand   BQ-at-query
       R04     -        38
@@ -70,7 +70,7 @@ bam_mcp_server --bam <PATH> --reference <PATH> [OPTIONS]
 Options:
   -b, --bam <PATH>           Path to sorted, indexed BAM file
   -r, --reference <PATH>     Path to FASTA reference (.fai index must exist alongside)
-  -w, --window <INT>         Default window half-width in bp around query position [default: 75]
+  -w, --window <INT>         Default window half-width: bases shown each side of the query position [default: 75]
   -d, --max-depth <INT>      Maximum reads to display in pileup; COV/allele stats still use all reads [default: 50]
   -q, --min-mapq <INT>       Minimum mapping quality filter [default: 0]
   -Q, --min-baseq <INT>      Minimum base quality to show as uppercase [default: 20]
@@ -95,7 +95,7 @@ All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout
 |---------------|---------|----------|-------------|
 | `chrom`       | string  | ✓        | Chromosome name exactly as in the BAM header (e.g. `chr1`, `1`, `chrM`) |
 | `position`    | integer | ✓        | 1-based genomic position to query |
-| `window`      | integer |          | Half-width of region in bp, 10–500 (overrides `--window`) |
+| `window`      | integer |          | Half-width in bp, 10–500: bases shown on each side of `position`, so the pileup spans `2×window+1` bases (overrides `--window`) |
 | `min_mapq`    | integer |          | Minimum mapping quality (overrides `--min-mapq`) |
 | `show_strand` | boolean |          | Show strand orientation per read [default: true] |
 | `show_mapq`   | boolean |          | Show mapping quality per read [default: true] |--allow-all-hosts
@@ -135,6 +135,29 @@ Returns the full README for this server, including usage instructions, tool desc
 | `^N`   | N inserted bases follow this position |
 | ` `    | Read does not span this position |
 | `[X]`  | Queried position (regardless of match/mismatch) |
+
+### Coordinates
+
+All coordinates in the output are **1-based and inclusive**, the same convention
+as the `position` input, VCF, IGV and `samtools`:
+
+- `Region: chr1:10,066-10,086` covers bases 10,066 to 10,086, both included.
+- The two numbers on the `POS` ruler are the first and last base of the window.
+- `COV … at chr1:10,076` and the `BQ` heading name the queried base, which is
+  the bracketed `[X]` column.
+
+The window is centred on the queried base: `window` bases before it, the queried
+base, and `window` bases after it, `2×window+1` bases in total. Near a contig end
+the window is clipped, so it can be shorter on that side.
+
+**Lining up with a VCF.** For a SNP, the VCF `POS` is the changed base, so it is
+the bracketed column when you query that position. Indels are anchored on the
+base *before* the change (`REF=CA ALT=C` at `POS` 100 deletes base 101):
+
+- Deletion: the `-` marks start in the column **after** the VCF `POS`. Query
+  `POS+1` to put the first deleted base in the brackets.
+- Insertion: `^N` is attached to the anchor base itself, so querying the VCF
+  `POS` shows the insertion on the bracketed column (e.g. `[.^2]`).
 
 ## MCP Client Configuration
 
@@ -265,7 +288,7 @@ src/
 The pipeline per call:
 
 1. Resolve `window` / `min_mapq` overrides from tool params vs CLI defaults
-2. Compute 0-based `[region_start, region_end)` from the 1-based query position
+2. Compute 0-based `[region_start, region_end)` = `[pos-1-window, pos+window)` from the 1-based query position, clipped to the contig (labels are converted back to 1-based when rendering)
 3. Fetch reference sub-sequence (`ReferenceReader::fetch`)
 4. Query BAM for overlapping reads with filtering (`query_region`); tally depth, alleles and MQ over all passing reads, then reservoir-sample at most `max_depth` reads for display
 5. Expand each read's CIGAR into per-reference-position slots (`expand_reads`)

@@ -424,3 +424,48 @@ async fn test_tools_call_query_pileup_window_out_of_range() {
         );
     }
 }
+
+/// `window` is a half-width: the output spans 2*window+1 bases centred on the
+/// queried base, and all labels are 1-based.
+#[tokio::test]
+async fn test_tools_call_query_pileup_window_is_centred() {
+    let addr = start_server().await;
+    let mut session = McpSession::connect(addr).await;
+
+    let id = session.take_id();
+    let resp = session
+        .request(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "query_pileup",
+                "arguments": { "chrom": "chr1", "position": 10076, "window": 10 }
+            }
+        }))
+        .await;
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("first content item must have text");
+
+    assert!(
+        text.contains("Region: chr1:10,066-10,086  (21bp window)"),
+        "expected 10 bases each side of 10,076, got:\n{text}"
+    );
+    assert!(
+        text.contains("COV   ") && text.contains("x at chr1:10,076"),
+        "{text}"
+    );
+
+    // REF line: 10 bases, the bracketed query base, 10 bases.
+    let ref_line = text.lines().find(|l| l.starts_with("REF")).unwrap();
+    let seq = &ref_line["REF   ".len()..];
+    let open = seq.find('[').expect("query base is bracketed");
+    let close = seq.find(']').expect("query base is bracketed");
+    assert_eq!(open, 10, "10 bases before the query: {seq:?}");
+    assert_eq!(
+        seq.len() - close - 1,
+        10,
+        "10 bases after the query: {seq:?}"
+    );
+}
