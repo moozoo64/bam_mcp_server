@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, bail};
@@ -96,6 +97,74 @@ impl ReadRecord {
         }
         None
     }
+
+    /// The indel this read has immediately after the aligned base at 0-based
+    /// `pos`, i.e. anchored on `pos` the way VCF anchors indels. `None` if the
+    /// read has no aligned base at `pos` or no indel follows it.
+    ///
+    /// Matches `samtools mpileup`, which prints `+N…` / `-N…` on the anchor base.
+    pub fn indel_after(&self, pos: i64) -> Option<Indel> {
+        if pos < self.ref_start || pos >= self.ref_end {
+            return None;
+        }
+        let mut ref_pos = self.ref_start;
+        let mut read_pos = 0usize;
+        // True when the previous op was a Match whose last base is at `pos`.
+        let mut anchored = false;
+        for op in &self.cigar {
+            if anchored {
+                return match *op {
+                    CigarOp::Ins(n) => {
+                        let end = (read_pos + n as usize).min(self.sequence.len());
+                        let start = read_pos.min(end);
+                        Some(Indel::Ins(self.sequence[start..end].to_ascii_uppercase()))
+                    }
+                    CigarOp::Del(n) => Some(Indel::Del(n)),
+                    _ => None,
+                };
+            }
+            match *op {
+                CigarOp::Match(n) => {
+                    ref_pos += n as i64;
+                    read_pos += n as usize;
+                    anchored = ref_pos == pos + 1;
+                    if ref_pos > pos + 1 {
+                        return None;
+                    }
+                }
+                CigarOp::Del(n) | CigarOp::Skip(n) => {
+                    ref_pos += n as i64;
+                    if ref_pos > pos {
+                        return None;
+                    }
+                }
+                CigarOp::Ins(n) | CigarOp::SoftClip(n) => read_pos += n as usize,
+                CigarOp::HardClip(_) => {}
+            }
+        }
+        None
+    }
+}
+
+/// An insertion or deletion immediately following an anchor base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Indel {
+    /// Inserted read bases (uppercase).
+    Ins(Vec<u8>),
+    /// Number of deleted reference bases.
+    Del(u32),
+}
+
+impl Indel {
+    /// Short label used to group and display indels: `+A`, `+15bp`, `-1bp`.
+    /// Long insertions are grouped by length so the counts stay readable.
+    pub fn label(&self) -> String {
+        match self {
+            Indel::Ins(seq) if seq.len() <= 10 => format!("+{}", String::from_utf8_lossy(seq)),
+            Indel::Ins(seq) => format!("+{}bp", seq.len()),
+            Indel::Del(n) => format!("-{n}bp"),
+        }
+    }
 }
 
 /// Depth, allele and strand counts at the queried position, accumulated over
@@ -114,6 +183,12 @@ pub struct SiteStats {
     pub fwd: usize,
     /// Reverse-strand reads covering the position.
     pub rev: usize,
+    /// Reads with an insertion right after the position (anchored on it).
+    pub ins_after: usize,
+    /// Reads with a deletion starting right after the position (anchored on it).
+    pub del_after: usize,
+    /// Anchored indel counts by label (`+A`, `-1bp`, …); see `Indel::label`.
+    pub indels: BTreeMap<String, usize>,
 }
 
 impl SiteStats {
@@ -135,6 +210,15 @@ impl SiteStats {
                 _ => {} // N etc.: counted in depth only
             },
         }
+    }
+
+    /// Record an indel anchored on the position.
+    pub fn add_indel(&mut self, indel: &Indel) {
+        match indel {
+            Indel::Ins(_) => self.ins_after += 1,
+            Indel::Del(_) => self.del_after += 1,
+        }
+        *self.indels.entry(indel.label()).or_default() += 1;
     }
 }
 
@@ -309,6 +393,9 @@ pub fn query_region(
         if let Some(obs) = read.observe_at(query_pos) {
             site.add(obs, read.is_reverse);
         }
+        if let Some(indel) = read.indel_after(query_pos) {
+            site.add_indel(&indel);
+        }
         mapq_sum += mapq as u64;
         mapq_min = Some(mapq_min.map_or(mapq, |m| m.min(mapq)));
 
@@ -458,6 +545,71 @@ mod tests {
         assert_eq!(r.observe_at(112), Some(Base(b'T')));
         assert_eq!(r.observe_at(113), Some(Base(b'T')));
         assert_eq!(r.observe_at(114), None, "after alignment");
+    }
+
+    #[test]
+    fn test_indel_after() {
+        // ref 100: 2S 3M 2I 2M 2D 2M     read: ss ACG tt GT -- CA
+        let r = record_with(
+            100,
+            vec![
+                CigarOp::SoftClip(2),
+                CigarOp::Match(3),
+                CigarOp::Ins(2),
+                CigarOp::Match(2),
+                CigarOp::Del(2),
+                CigarOp::Match(2),
+            ],
+            b"ssACGttGTCA",
+        );
+        assert_eq!(r.indel_after(101), None, "middle of a match");
+        assert_eq!(
+            r.indel_after(102),
+            Some(Indel::Ins(b"TT".to_vec())),
+            "uppercased"
+        );
+        assert_eq!(r.indel_after(103), None);
+        assert_eq!(r.indel_after(104), Some(Indel::Del(2)));
+        assert_eq!(r.indel_after(105), None, "deleted base is not an anchor");
+        assert_eq!(r.indel_after(106), None, "deleted base is not an anchor");
+        assert_eq!(r.indel_after(108), None, "last base, nothing follows");
+        assert_eq!(r.indel_after(99), None, "before alignment");
+
+        // Insertion at the start of the read has no aligned anchor base.
+        let r = record_with(100, vec![CigarOp::Ins(2), CigarOp::Match(3)], b"ttACG");
+        assert_eq!(r.indel_after(99), None);
+        assert_eq!(r.indel_after(100), None);
+    }
+
+    #[test]
+    fn test_indel_label() {
+        assert_eq!(Indel::Ins(b"A".to_vec()).label(), "+A");
+        assert_eq!(Indel::Ins(b"ACGTACGTAC".to_vec()).label(), "+ACGTACGTAC");
+        assert_eq!(Indel::Ins(b"ACGTACGTACG".to_vec()).label(), "+11bp");
+        assert_eq!(Indel::Del(3).label(), "-3bp");
+    }
+
+    /// Anchored indel counts at VCF sites in the sample BAM, cross-checked with
+    /// `samtools mpileup -A -B -Q0 --ff UNMAP,SECONDARY,QCFAIL,DUP,SUPPLEMENTARY`.
+    #[test]
+    fn test_indel_counts_at_vcf_sites() {
+        // (1-based VCF POS, depth, ins_after, del_after, expected label, count)
+        let cases = [
+            (4_888_325, 32, 26, 0, "+A", 25),   // hom G>GA
+            (3_956_581, 39, 22, 0, "+A", 22),   // het G>GA
+            (3_386_594, 39, 0, 36, "-1bp", 36), // hom GA>G
+            (3_180_748, 35, 0, 18, "-1bp", 18), // het GA>G
+        ];
+        for (pos1, depth, ins, del, label, n) in cases {
+            let q = pos1 - 1;
+            let r = query_region(&sample_bam(), "chr1", q - 75, q + 76, q, 0, 50)
+                .expect("query_region should succeed");
+            let site = &r.site;
+            assert_eq!(site.depth, depth, "depth at {pos1}");
+            assert_eq!(site.ins_after, ins, "ins_after at {pos1}");
+            assert_eq!(site.del_after, del, "del_after at {pos1}");
+            assert_eq!(site.indels.get(label), Some(&n), "{label} at {pos1}");
+        }
     }
 
     #[test]

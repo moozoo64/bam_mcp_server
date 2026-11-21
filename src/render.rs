@@ -251,6 +251,20 @@ fn render_footer(
     if !allele_lines.is_empty() {
         lines.push(format!("      {}", allele_lines.join("  ")));
     }
+    for (kind, prefix, count) in [
+        ("ins after", '+', site.ins_after),
+        ("del after", '-', site.del_after),
+    ] {
+        if count > 0 {
+            lines.push(format!(
+                "      {}: {} ({:.1}%)  {}",
+                kind,
+                count,
+                100.0 * count as f64 / site.depth.max(1) as f64,
+                indel_breakdown(&site.indels, prefix),
+            ));
+        }
+    }
     lines.push(format!(
         "      +strand: {}  -strand: {}",
         site.fwd, site.rev
@@ -269,6 +283,28 @@ fn render_footer(
     lines.push(render_bq_section(reads, query_offset, query_pos, opts));
 
     lines.join("\n")
+}
+
+/// Format the anchored indels whose label starts with `prefix` (`+` or `-`),
+/// most common first, e.g. `+A: 24  +AA: 1`. Shows at most 4 and sums the rest.
+fn indel_breakdown(indels: &std::collections::BTreeMap<String, usize>, prefix: char) -> String {
+    let mut entries: Vec<(&String, &usize)> = indels
+        .iter()
+        .filter(|(label, _)| label.starts_with(prefix))
+        .collect();
+    // Most common first; BTreeMap order breaks ties deterministically.
+    entries.sort_by(|a, b| b.1.cmp(a.1));
+    const MAX_SHOWN: usize = 4;
+    let mut parts: Vec<String> = entries
+        .iter()
+        .take(MAX_SHOWN)
+        .map(|(label, n)| format!("{label}: {n}"))
+        .collect();
+    let rest: usize = entries.iter().skip(MAX_SHOWN).map(|(_, n)| **n).sum();
+    if rest > 0 {
+        parts.push(format!("other: {rest}"));
+    }
+    parts.join("  ")
 }
 
 // ── Public entry point ───────────────────────────────────────────────────────
@@ -707,6 +743,49 @@ mod tests {
         assert!(content.starts_with("1000 "), "{line:?}");
         assert_eq!(&content[12..15], "[*]", "{line:?}");
         assert!(!content.contains("1013"), "{line:?}");
+    }
+
+    #[test]
+    fn test_footer_anchored_indels() {
+        let ref_seq = b"ACGTA";
+        let ar = make_ar(vec![Some(PileupBase::Match { qual: 30 }); 5], false, 60);
+        let mut qr = dummy_query_result(vec![dummy_record(false, 60)]);
+        qr.site = SiteStats {
+            depth: 40,
+            g: 40,
+            fwd: 20,
+            rev: 20,
+            ins_after: 25,
+            del_after: 2,
+            indels: [
+                ("+A", 20),
+                ("+AA", 2),
+                ("+C", 1),
+                ("+G", 1),
+                ("+T", 1),
+                ("-1bp", 2),
+            ]
+            .into_iter()
+            .map(|(l, n)| (l.to_string(), n))
+            .collect(),
+            ..Default::default()
+        };
+        let output = render_pileup(&[ar], ref_seq, 10, 12, &qr, &default_opts());
+        assert!(
+            output.contains("ins after: 25 (62.5%)  +A: 20  +AA: 2  +C: 1  +G: 1  other: 1"),
+            "{output}"
+        );
+        assert!(output.contains("del after: 2 (5.0%)  -1bp: 2"), "{output}");
+    }
+
+    #[test]
+    fn test_footer_no_indel_lines_without_indels() {
+        let ref_seq = b"ACGTA";
+        let ar = make_ar(vec![Some(PileupBase::Match { qual: 30 }); 5], false, 60);
+        let qr = dummy_query_result(vec![dummy_record(false, 60)]);
+        let output = render_pileup(&[ar], ref_seq, 10, 12, &qr, &default_opts());
+        assert!(!output.contains("ins after"), "{output}");
+        assert!(!output.contains("del after"), "{output}");
     }
 
     #[test]

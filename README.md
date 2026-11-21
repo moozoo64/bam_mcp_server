@@ -45,7 +45,22 @@ a random sample is shown and the footer says so
 (`Reads shown: 50 of 163 passing filters (random sample, capped by --max-depth)`).
 The `COV` depth, allele counts and percentages, strand counts and MQ stats are
 always computed from **all** reads passing the filters, so they are not affected
-by the cap. Depth counts deletions and does not apply a base-quality filter. The
+by the cap. Depth counts deletions and does not apply a base-quality filter.
+
+Indels anchored on the queried base (the base right before the change, the way
+VCF anchors them) are counted on extra footer lines, like the `+N`/`-N` marks
+in `samtools mpileup`. They appear only when present, and percentages are of COV:
+
+```
+COV   32x at chr1:4,888,325
+      G: 32 (100.0%)
+      ins after: 26 (81.2%)  +A: 25  +AA: 1
+```
+
+Insertions are listed by inserted sequence (`+A`; longer than 10bp as `+15bp`)
+and deletions by length (`-1bp`). The 4 most common are shown and the rest are
+summed as `other`. These reads are also counted in the base line above, because
+they have a base at the anchor position. The
 `BQ` section lists only the reads that are shown.
 
 ## Requirements
@@ -154,8 +169,12 @@ the window is clipped, so it can be shorter on that side.
 the bracketed column when you query that position. Indels are anchored on the
 base *before* the change (`REF=CA ALT=C` at `POS` 100 deletes base 101):
 
+Query the VCF `POS` of an indel and the footer's `ins after` / `del after`
+line counts the reads that carry it. In the rows:
+
 - Deletion: the `-` marks start in the column **after** the VCF `POS`. Query
-  `POS+1` to put the first deleted base in the brackets.
+  `POS+1` instead to put the first deleted base in the brackets (it is then
+  counted in that position's `del` allele).
 - Insertion: `^N` is attached to the anchor base itself, so querying the VCF
   `POS` shows the insertion on the bracketed column (e.g. `[.^2]`).
 
