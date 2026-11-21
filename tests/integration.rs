@@ -75,8 +75,16 @@ fn test_pipeline_chr1() {
     );
 
     // 2. BAM query.
-    let query_result = query_region(&sample_bam(), &first_chrom, region_start, region_end, 0, 50)
-        .expect("query_region should succeed");
+    let query_result = query_region(
+        &sample_bam(),
+        &first_chrom,
+        region_start,
+        region_end,
+        query_pos_0,
+        0,
+        50,
+    )
+    .expect("query_region should succeed");
     assert!(
         !query_result.reads.is_empty(),
         "expected reads in a 30× WGS region at {}:{}-{}",
@@ -148,7 +156,7 @@ fn test_pipeline_chr1() {
 /// does not exist in the BAM header.
 #[test]
 fn test_pipeline_invalid_chrom() {
-    let err = query_region(&sample_bam(), "nonexistent_chrXYZ99", 0, 100, 0, 50)
+    let err = query_region(&sample_bam(), "nonexistent_chrXYZ99", 0, 100, 50, 0, 50)
         .expect_err("should fail for unknown chromosome");
     let msg = err.to_string();
     assert!(
@@ -184,8 +192,16 @@ fn test_pipeline_empty_region() {
         .fetch(&first_chrom, region_start, region_end)
         .expect("fetch reference");
 
-    let query_result = query_region(&sample_bam(), &first_chrom, region_start, region_end, 0, 50)
-        .expect("query should succeed even with zero reads");
+    let query_result = query_region(
+        &sample_bam(),
+        &first_chrom,
+        region_start,
+        region_end,
+        query_pos_0,
+        0,
+        50,
+    )
+    .expect("query should succeed even with zero reads");
 
     // Whether reads are present or not, the pipeline must not panic.
     let expanded = expand_reads(&query_result.reads, &ref_seq, region_start, region_end);

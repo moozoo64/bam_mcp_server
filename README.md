@@ -29,7 +29,7 @@ COV   5x at chr7:117,548,975
       MQ_mean: 59.4  MQ_min: 58
       Reads shown: 5  Reads filtered (MAPQ): 0  Reads filtered (dup/qcfail): 0
 
-BQ    chr7:117,548,975  (reads spanning query position, sorted by strand)
+BQ    chr7:117,548,975  (shown reads spanning query position, sorted by strand)
 
       Read    Strand   BQ-at-query
       R04     -        38
@@ -39,6 +39,14 @@ BQ    chr7:117,548,975  (reads spanning query position, sorted by strand)
       R03     +        39
       mean: 38.0   min: 36   max: 40
 ```
+
+At most `--max-depth` reads are drawn as rows; when more reads pass the filters,
+a random sample is shown and the footer says so
+(`Reads shown: 50 of 163 passing filters (random sample, capped by --max-depth)`).
+The `COV` depth, allele counts and percentages, strand counts and MQ stats are
+always computed from **all** reads passing the filters, so they are not affected
+by the cap. Depth counts deletions and does not apply a base-quality filter. The
+`BQ` section lists only the reads that are shown.
 
 ## Requirements
 
@@ -63,7 +71,7 @@ Options:
   -b, --bam <PATH>           Path to sorted, indexed BAM file
   -r, --reference <PATH>     Path to FASTA reference (.fai index must exist alongside)
   -w, --window <INT>         Default window half-width in bp around query position [default: 75]
-  -d, --max-depth <INT>      Maximum reads to display in pileup [default: 50]
+  -d, --max-depth <INT>      Maximum reads to display in pileup; COV/allele stats still use all reads [default: 50]
   -q, --min-mapq <INT>       Minimum mapping quality filter [default: 0]
   -Q, --min-baseq <INT>      Minimum base quality to show as uppercase [default: 20]
       --sse <ADDR:PORT>       Run as HTTP MCP server instead of stdio (e.g. 127.0.0.1:8090)
@@ -259,7 +267,7 @@ The pipeline per call:
 1. Resolve `window` / `min_mapq` overrides from tool params vs CLI defaults
 2. Compute 0-based `[region_start, region_end)` from the 1-based query position
 3. Fetch reference sub-sequence (`ReferenceReader::fetch`)
-4. Query BAM for overlapping reads with filtering (`query_region`)
+4. Query BAM for overlapping reads with filtering (`query_region`); tally depth, alleles and MQ over all passing reads, then reservoir-sample at most `max_depth` reads for display
 5. Expand each read's CIGAR into per-reference-position slots (`expand_reads`)
 6. Render to text (`render_pileup`)
 

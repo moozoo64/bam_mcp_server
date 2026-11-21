@@ -19,7 +19,7 @@ pub struct Args {
     #[arg(short = 'w', long, default_value_t = 75)]
     pub window: u32,
 
-    /// Maximum reads to display in pileup
+    /// Maximum reads to display in pileup; COV/allele stats still use all reads
     #[arg(short = 'd', long, default_value_t = 50)]
     pub max_depth: u32,
 

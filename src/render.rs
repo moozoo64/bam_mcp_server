@@ -169,7 +169,7 @@ fn render_bq_section(
     entries.sort_by_key(|&(_, is_rev, _)| if is_rev { 0u8 } else { 1u8 });
 
     let header = format!(
-        "BQ    {}:{}  (reads spanning query position, sorted by strand)",
+        "BQ    {}:{}  (shown reads spanning query position, sorted by strand)",
         opts.chrom,
         format_with_commas(query_pos),
     );
@@ -203,97 +203,61 @@ fn render_bq_section(
 
 fn render_footer(
     reads: &[AlignedRead],
-    ref_seq: &[u8],
     query_offset: usize,
     query_pos: i64,
     query_result: &QueryResult,
     opts: &RenderOpts,
 ) -> String {
-    // Coverage = reads that have a base at query_offset.
-    let covered: Vec<&AlignedRead> = reads
-        .iter()
-        .filter(|ar| ar.bases[query_offset].is_some())
-        .collect();
-    let coverage = covered.len();
-
-    // Allele counts at query position.
-    let mut allele_a = 0usize;
-    let mut allele_c = 0usize;
-    let mut allele_g = 0usize;
-    let mut allele_t = 0usize;
-    let mut allele_del = 0usize;
-
-    let ref_base = ref_seq[query_offset].to_ascii_uppercase();
-
-    for ar in &covered {
-        match &ar.bases[query_offset] {
-            Some(PileupBase::Match { .. }) => {
-                // Tally the reference base.
-                match ref_base {
-                    b'A' => allele_a += 1,
-                    b'C' => allele_c += 1,
-                    b'G' => allele_g += 1,
-                    b'T' => allele_t += 1,
-                    _ => {}
-                }
-            }
-            Some(PileupBase::Mismatch { base, .. }) => match base.to_ascii_uppercase() {
-                b'A' => allele_a += 1,
-                b'C' => allele_c += 1,
-                b'G' => allele_g += 1,
-                b'T' => allele_t += 1,
-                _ => {}
-            },
-            Some(PileupBase::Deletion) => allele_del += 1,
-            None => {}
-        }
-    }
+    // Depth, alleles and strand counts come from every read that passed the
+    // filters, not just the (possibly sampled) reads drawn above.
+    let site = &query_result.site;
 
     let mut allele_lines: Vec<String> = Vec::new();
     for (label, count) in [
-        ("A", allele_a),
-        ("C", allele_c),
-        ("G", allele_g),
-        ("T", allele_t),
-        ("del", allele_del),
+        ("A", site.a),
+        ("C", site.c),
+        ("G", site.g),
+        ("T", site.t),
+        ("del", site.del),
     ] {
         if count > 0 {
-            let pct = 100.0 * count as f64 / coverage.max(1) as f64;
+            let pct = 100.0 * count as f64 / site.depth.max(1) as f64;
             allele_lines.push(format!("{}: {} ({:.1}%)", label, count, pct));
         }
     }
 
-    // Strand balance.
-    let fwd = covered.iter().filter(|ar| !ar.record.is_reverse).count();
-    let rev = covered.len() - fwd;
-
-    // MQ stats across all reads returned by the query.
-    let (mq_mean, mq_min) = if query_result.reads.is_empty() {
-        (0.0f64, 0u8)
+    let shown = query_result.reads.len();
+    let reads_shown = if shown < query_result.total_passed {
+        format!(
+            "Reads shown: {} of {} passing filters (random sample, capped by --max-depth)",
+            shown, query_result.total_passed
+        )
     } else {
-        let sum: usize = query_result.reads.iter().map(|r| r.mapq as usize).sum();
-        let mean = sum as f64 / query_result.reads.len() as f64;
-        let min = query_result.reads.iter().map(|r| r.mapq).min().unwrap_or(0);
-        (mean, min)
+        format!("Reads shown: {}", shown)
     };
 
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!(
         "COV   {}x at {}:{}",
-        coverage,
+        site.depth,
         opts.chrom,
         format_with_commas(query_pos),
     ));
     if !allele_lines.is_empty() {
         lines.push(format!("      {}", allele_lines.join("  ")));
     }
-    lines.push(format!("      +strand: {}  -strand: {}", fwd, rev));
-    lines.push(format!("      MQ_mean: {:.1}  MQ_min: {}", mq_mean, mq_min));
     lines.push(format!(
-        "      Reads shown: {}  Reads filtered (MAPQ): {}  Reads filtered (dup/qcfail): {}",
-        query_result.reads.len(),
-        query_result.filtered_mapq,
-        query_result.filtered_flags,
+        "      +strand: {}  -strand: {}",
+        site.fwd, site.rev
+    ));
+    lines.push(format!(
+        "      MQ_mean: {:.1}  MQ_min: {}",
+        query_result.mapq_mean(),
+        query_result.mapq_min.unwrap_or(0)
+    ));
+    lines.push(format!(
+        "      {}  Reads filtered (MAPQ): {}  Reads filtered (dup/qcfail): {}",
+        reads_shown, query_result.filtered_mapq, query_result.filtered_flags,
     ));
 
     lines.push(String::new());
@@ -331,7 +295,7 @@ pub fn render_pileup(
         .enumerate()
         .map(|(i, ar)| render_read_line(i, ar, query_offset, opts))
         .collect();
-    let footer = render_footer(reads, ref_seq, query_offset, query_pos, query_result, opts);
+    let footer = render_footer(reads, query_offset, query_pos, query_result, opts);
 
     let mut parts: Vec<String> = Vec::new();
     parts.push(header);
@@ -368,7 +332,7 @@ fn format_with_commas(n: i64) -> String {
 mod tests {
     use super::*;
     use crate::pileup::{AlignedRead, PileupBase};
-    use crate::query::{QueryResult, ReadRecord};
+    use crate::query::{QueryResult, ReadRecord, SiteStats};
 
     fn dummy_record(is_reverse: bool, mapq: u8) -> ReadRecord {
         ReadRecord {
@@ -406,9 +370,11 @@ mod tests {
 
     fn dummy_query_result(reads: Vec<ReadRecord>) -> QueryResult {
         QueryResult {
+            total_passed: reads.len(),
+            mapq_sum: reads.iter().map(|r| r.mapq as u64).sum(),
+            mapq_min: reads.iter().map(|r| r.mapq).min(),
             reads,
-            filtered_mapq: 0,
-            filtered_flags: 0,
+            ..Default::default()
         }
     }
 
@@ -595,11 +561,19 @@ mod tests {
         });
         let ar3 = make_ar(bases3, true, 55);
 
-        let qr = dummy_query_result(vec![
+        let mut qr = dummy_query_result(vec![
             dummy_record(false, 60),
             dummy_record(false, 60),
             dummy_record(true, 55),
         ]);
+        qr.site = SiteStats {
+            depth: 3,
+            g: 2,
+            t: 1,
+            fwd: 2,
+            rev: 1,
+            ..Default::default()
+        };
         let output = render_pileup(
             &[ar1, ar2, ar3],
             ref_seq,
@@ -625,6 +599,41 @@ mod tests {
             output.contains("T: 1"),
             "Expected T: 1 in footer: {}",
             output
+        );
+    }
+
+    /// When the displayed reads are a capped sample, COV, allele fractions,
+    /// strand counts and MQ must come from all passing reads, not the sample.
+    #[test]
+    fn test_footer_uses_full_depth_when_sampled() {
+        let ref_seq = b"ACGTA";
+        // Only 2 reads drawn...
+        let ar1 = make_ar(vec![Some(PileupBase::Match { qual: 30 }); 5], false, 60);
+        let ar2 = make_ar(vec![Some(PileupBase::Match { qual: 30 }); 5], true, 60);
+        let mut qr = dummy_query_result(vec![dummy_record(false, 60), dummy_record(true, 60)]);
+        // ...out of 120 passing reads, 40 of which cover the query position.
+        qr.total_passed = 120;
+        qr.mapq_sum = 120 * 50;
+        qr.mapq_min = Some(7);
+        qr.site = SiteStats {
+            depth: 40,
+            g: 30,
+            t: 10,
+            fwd: 22,
+            rev: 18,
+            ..Default::default()
+        };
+
+        let output = render_pileup(&[ar1, ar2], ref_seq, 10, 12, &qr, &default_opts());
+
+        assert!(output.contains("COV   40x"), "{output}");
+        assert!(output.contains("G: 30 (75.0%)"), "{output}");
+        assert!(output.contains("T: 10 (25.0%)"), "{output}");
+        assert!(output.contains("+strand: 22  -strand: 18"), "{output}");
+        assert!(output.contains("MQ_mean: 50.0  MQ_min: 7"), "{output}");
+        assert!(
+            output.contains("Reads shown: 2 of 120 passing filters"),
+            "{output}"
         );
     }
 

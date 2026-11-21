@@ -192,11 +192,13 @@ impl PileupServer {
             &params.chrom,
             region_start,
             region_end,
+            query_pos_0,
             min_mapq,
             config.max_depth as usize,
         )?;
         debug!(
-            "BAM query returned {} records; filtered MAPQ={} flags={}",
+            "BAM query: {} passing reads ({} kept for display); filtered MAPQ={} flags={}",
+            query_result.total_passed,
             query_result.reads.len(),
             query_result.filtered_mapq,
             query_result.filtered_flags,

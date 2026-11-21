@@ -47,14 +47,126 @@ pub struct ReadRecord {
     pub is_qcfail: bool,
 }
 
+/// What a single read shows at one reference position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteObservation {
+    /// An aligned read base (ASCII, as stored in the BAM).
+    Base(u8),
+    /// A deletion in the read spans the position.
+    Deletion,
+}
+
+impl ReadRecord {
+    /// What this read has at 0-based reference position `pos`, or `None` if it
+    /// does not cover it (outside the alignment, or inside an `N` skip).
+    ///
+    /// Uses the same CIGAR interpretation as `pileup::expand_reads`.
+    pub fn observe_at(&self, pos: i64) -> Option<SiteObservation> {
+        if pos < self.ref_start || pos >= self.ref_end {
+            return None;
+        }
+        let mut ref_pos = self.ref_start;
+        let mut read_pos = 0usize;
+        for op in &self.cigar {
+            match *op {
+                CigarOp::Match(n) => {
+                    let n = n as i64;
+                    if pos < ref_pos + n {
+                        let i = read_pos + (pos - ref_pos) as usize;
+                        return self.sequence.get(i).map(|&b| SiteObservation::Base(b));
+                    }
+                    ref_pos += n;
+                    read_pos += n as usize;
+                }
+                CigarOp::Del(n) => {
+                    if pos < ref_pos + n as i64 {
+                        return Some(SiteObservation::Deletion);
+                    }
+                    ref_pos += n as i64;
+                }
+                CigarOp::Skip(n) => {
+                    if pos < ref_pos + n as i64 {
+                        return None;
+                    }
+                    ref_pos += n as i64;
+                }
+                CigarOp::Ins(n) | CigarOp::SoftClip(n) => read_pos += n as usize,
+                CigarOp::HardClip(_) => {}
+            }
+        }
+        None
+    }
+}
+
+/// Depth, allele and strand counts at the queried position, accumulated over
+/// **every** read that passed the filters — not just the sampled reads.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SiteStats {
+    /// Reads with a base or a deletion at the position.
+    pub depth: usize,
+    pub a: usize,
+    pub c: usize,
+    pub g: usize,
+    pub t: usize,
+    /// Reads with a deletion spanning the position.
+    pub del: usize,
+    /// Forward-strand reads covering the position.
+    pub fwd: usize,
+    /// Reverse-strand reads covering the position.
+    pub rev: usize,
+}
+
+impl SiteStats {
+    /// Record one read's observation at the position.
+    pub fn add(&mut self, obs: SiteObservation, is_reverse: bool) {
+        self.depth += 1;
+        if is_reverse {
+            self.rev += 1;
+        } else {
+            self.fwd += 1;
+        }
+        match obs {
+            SiteObservation::Deletion => self.del += 1,
+            SiteObservation::Base(b) => match b.to_ascii_uppercase() {
+                b'A' => self.a += 1,
+                b'C' => self.c += 1,
+                b'G' => self.g += 1,
+                b'T' => self.t += 1,
+                _ => {} // N etc.: counted in depth only
+            },
+        }
+    }
+}
+
 /// The result of a BAM region query after filtering.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct QueryResult {
+    /// Reads to display: all passing reads, or a random sample of `max_depth`.
     pub reads: Vec<ReadRecord>,
     /// Reads excluded because mapping quality < min_mapq
     pub filtered_mapq: usize,
     /// Reads excluded because they are duplicates or QC failures
     pub filtered_flags: usize,
+    /// Number of reads overlapping the window that passed all filters
+    /// (before sampling down to `max_depth`).
+    pub total_passed: usize,
+    /// Counts at the query position over all passing reads.
+    pub site: SiteStats,
+    /// Sum of MAPQ over all passing reads.
+    pub mapq_sum: u64,
+    /// Minimum MAPQ over all passing reads (`None` if there are none).
+    pub mapq_min: Option<u8>,
+}
+
+impl QueryResult {
+    /// Mean MAPQ over all passing reads (0.0 if there are none).
+    pub fn mapq_mean(&self) -> f64 {
+        if self.total_passed == 0 {
+            0.0
+        } else {
+            self.mapq_sum as f64 / self.total_passed as f64
+        }
+    }
 }
 
 /// Look up the length of `chrom` in a BAM header, or fail with a helpful
@@ -89,7 +201,10 @@ pub fn contig_length(bam_path: &Path, chrom: &str) -> anyhow::Result<usize> {
 
 /// Query a BAM file for all reads overlapping `[start, end)` on `chrom`.
 ///
-/// Coordinates are **0-based, half-open**.
+/// Coordinates are **0-based, half-open**. `query_pos` (0-based) is the
+/// position whose depth and allele counts are tallied in `QueryResult::site`;
+/// those counts, `total_passed` and the MAPQ stats cover every passing read,
+/// while `reads` holds at most `max_depth` of them for display.
 ///
 /// Filtering decision tree (applied in order):
 /// 1. Unmapped / secondary / supplementary → skipped silently (not counted)
@@ -102,6 +217,7 @@ pub fn query_region(
     chrom: &str,
     start: i64,
     end: i64,
+    query_pos: i64,
     min_mapq: u8,
     max_depth: usize,
 ) -> anyhow::Result<QueryResult> {
@@ -128,6 +244,9 @@ pub fn query_region(
     // `total_passed` is the count of reads that reached the reservoir stage
     // (i.e. passed all filters). Used as the denominator in reservoir sampling.
     let mut total_passed: usize = 0;
+    let mut site = SiteStats::default();
+    let mut mapq_sum: u64 = 0;
+    let mut mapq_min: Option<u8> = None;
 
     for result in reader.query(&header, &region)?.records() {
         let record = result.context("Failed to read BAM record")?;
@@ -186,12 +305,18 @@ pub fn query_region(
             is_qcfail,
         };
 
+        // Tally depth / alleles / MAPQ over every passing read, before sampling.
+        if let Some(obs) = read.observe_at(query_pos) {
+            site.add(obs, read.is_reverse);
+        }
+        mapq_sum += mapq as u64;
+        mapq_min = Some(mapq_min.map_or(mapq, |m| m.min(mapq)));
+
         // Reservoir sampling (Knuth's Algorithm R): keep at most `max_depth` reads.
         if total_passed < max_depth {
             candidates.push(read);
         } else {
-            // Replace a random slot with probability max_depth / (total_passed + 1)
-            // Reservoir sampling: replace a random slot with probability
+            // Replace a random slot with probability
             // max_depth / (total_passed + 1)
             let j: usize = Uniform::new_inclusive(0usize, total_passed)
                 .expect("valid reservoir range")
@@ -207,6 +332,10 @@ pub fn query_region(
         reads: candidates,
         filtered_mapq,
         filtered_flags,
+        total_passed,
+        site,
+        mapq_sum,
+        mapq_min,
     })
 }
 
@@ -280,6 +409,106 @@ mod tests {
         }
     }
 
+    fn record_with(ref_start: i64, cigar: Vec<CigarOp>, sequence: &[u8]) -> ReadRecord {
+        let ref_end = compute_ref_end(ref_start, &cigar);
+        ReadRecord {
+            name: "r".into(),
+            ref_start,
+            ref_end,
+            cigar,
+            sequence: sequence.to_vec(),
+            base_quals: vec![30; sequence.len()],
+            is_reverse: false,
+            mapq: 60,
+            is_dup: false,
+            is_qcfail: false,
+        }
+    }
+
+    #[test]
+    fn test_observe_at() {
+        use SiteObservation::{Base, Deletion};
+        // ref 100: 2S 3M 1I 2M 2D 2M 3N 2M
+        // read:    ss ACG  t  GT  --  CA ... TT
+        let r = record_with(
+            100,
+            vec![
+                CigarOp::SoftClip(2),
+                CigarOp::Match(3),
+                CigarOp::Ins(1),
+                CigarOp::Match(2),
+                CigarOp::Del(2),
+                CigarOp::Match(2),
+                CigarOp::Skip(3),
+                CigarOp::Match(2),
+            ],
+            b"ssACGtGTCATT",
+        );
+        assert_eq!(r.observe_at(99), None, "before alignment");
+        assert_eq!(r.observe_at(100), Some(Base(b'A')), "soft clip skipped");
+        assert_eq!(r.observe_at(102), Some(Base(b'G')));
+        assert_eq!(r.observe_at(103), Some(Base(b'G')), "insertion skipped");
+        assert_eq!(r.observe_at(104), Some(Base(b'T')));
+        assert_eq!(r.observe_at(105), Some(Deletion));
+        assert_eq!(r.observe_at(106), Some(Deletion));
+        assert_eq!(r.observe_at(107), Some(Base(b'C')));
+        assert_eq!(r.observe_at(108), Some(Base(b'A')));
+        assert_eq!(r.observe_at(109), None, "inside N skip");
+        assert_eq!(r.observe_at(111), None, "inside N skip");
+        assert_eq!(r.observe_at(112), Some(Base(b'T')));
+        assert_eq!(r.observe_at(113), Some(Base(b'T')));
+        assert_eq!(r.observe_at(114), None, "after alignment");
+    }
+
+    #[test]
+    fn test_site_stats_add() {
+        let mut s = SiteStats::default();
+        s.add(SiteObservation::Base(b'a'), false);
+        s.add(SiteObservation::Base(b'T'), true);
+        s.add(SiteObservation::Base(b'N'), true);
+        s.add(SiteObservation::Deletion, false);
+        assert_eq!(
+            s,
+            SiteStats {
+                depth: 4,
+                a: 1,
+                t: 1,
+                del: 1,
+                fwd: 2,
+                rev: 2,
+                ..Default::default()
+            }
+        );
+    }
+
+    /// With a small `max_depth`, site depth must still count every passing read.
+    #[test]
+    fn test_site_depth_not_capped_by_max_depth() {
+        let mut reader = bam::io::indexed_reader::Builder::default()
+            .build_from_path(sample_bam())
+            .expect("open BAM");
+        let header = reader.read_header().expect("read header");
+        let chrom = header
+            .reference_sequences()
+            .keys()
+            .next()
+            .expect("at least one reference sequence")
+            .to_string();
+        drop(reader);
+
+        let (start, end, pos) = (10_000, 10_150, 10_075);
+        let full = query_region(&sample_bam(), &chrom, start, end, pos, 0, 10_000)
+            .expect("query_region should succeed");
+        let capped = query_region(&sample_bam(), &chrom, start, end, pos, 0, 3)
+            .expect("query_region should succeed");
+
+        assert!(full.site.depth > 3, "need real depth > cap for this test");
+        assert_eq!(capped.reads.len(), 3);
+        assert_eq!(capped.total_passed, full.total_passed);
+        assert_eq!(capped.site, full.site);
+        assert_eq!(capped.mapq_sum, full.mapq_sum);
+    }
+
     #[test]
     fn test_compute_ref_end() {
         // 100M → ref span = 100
@@ -325,6 +554,7 @@ mod tests {
             &first_chrom,
             10_000.min(first_len - 200),
             10_150.min(first_len),
+            10_075.min(first_len - 100),
             0,
             50,
         )
@@ -343,7 +573,7 @@ mod tests {
 
     #[test]
     fn test_query_invalid_chrom() {
-        let err = query_region(&sample_bam(), "nonexistent_chrXYZ99", 0, 100, 0, 50)
+        let err = query_region(&sample_bam(), "nonexistent_chrXYZ99", 0, 100, 50, 0, 50)
             .expect_err("should fail for unknown chromosome");
         let msg = err.to_string();
         assert!(
@@ -367,7 +597,7 @@ mod tests {
             .to_string();
         drop(reader);
 
-        let result = query_region(&sample_bam(), &first_chrom, 10_000, 10_150, 255, 50)
+        let result = query_region(&sample_bam(), &first_chrom, 10_000, 10_150, 10_075, 255, 50)
             .expect("query_region should succeed");
 
         assert!(
