@@ -359,3 +359,68 @@ async fn test_tools_call_query_pileup_invalid_chrom() {
         "error text must mention 'Error', got: {text}"
     );
 }
+
+/// Out-of-range positions (< 1 or beyond the contig length) must return an
+/// immediate tool-level error instead of panicking and leaving the request
+/// unanswered.
+#[tokio::test]
+async fn test_tools_call_query_pileup_position_out_of_range() {
+    let addr = start_server().await;
+    let mut session = McpSession::connect(addr).await;
+
+    // Use a position far past the end of any human contig as the upper case.
+    for position in [0_i64, -5, 1_000_000_000] {
+        let id = session.take_id();
+        let resp = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            session.request(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {
+                    "name": "query_pileup",
+                    "arguments": { "chrom": "chr1", "position": position }
+                }
+            })),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("position {position}: server did not respond"));
+
+        let text = resp["result"]["content"][0]["text"]
+            .as_str()
+            .expect("first content item must have text");
+        assert!(
+            text.contains("out of range"),
+            "position {position}: expected out-of-range error, got: {text}"
+        );
+    }
+}
+
+/// A per-call `window` outside 10–500 must be rejected with a clear error.
+#[tokio::test]
+async fn test_tools_call_query_pileup_window_out_of_range() {
+    let addr = start_server().await;
+    let mut session = McpSession::connect(addr).await;
+
+    for window in [0_u32, 9, 501] {
+        let id = session.take_id();
+        let resp = session
+            .request(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {
+                    "name": "query_pileup",
+                    "arguments": { "chrom": "chr1", "position": 10076, "window": window }
+                }
+            }))
+            .await;
+        let text = resp["result"]["content"][0]["text"]
+            .as_str()
+            .expect("first content item must have text");
+        assert!(
+            text.contains("window") && text.contains("out of range"),
+            "window {window}: expected out-of-range error, got: {text}"
+        );
+    }
+}

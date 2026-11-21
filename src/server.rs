@@ -11,7 +11,7 @@ use noodles::bam;
 
 use crate::cli::AppConfig;
 use crate::pileup::expand_reads;
-use crate::query::query_region;
+use crate::query::{contig_length, query_region};
 use crate::reference::ReferenceReader;
 use crate::render::{RenderOpts, render_pileup};
 
@@ -35,6 +35,43 @@ pub struct QueryPileupParams {
 
     /// Show mapping quality column per read
     pub show_mapq: Option<bool>,
+}
+
+/// Allowed range for the per-call `window` parameter (bp).
+const MIN_WINDOW: u32 = 10;
+const MAX_WINDOW: u32 = 500;
+
+/// Run a synchronous tool body on Tokio's blocking pool and turn its result
+/// into the tool's text output.
+///
+/// The work does blocking file I/O, so it must not run on an async worker.
+/// Running it in its own task also contains panics: a panic becomes an error
+/// reply instead of a request that never gets answered.
+async fn run_blocking_tool<F>(name: &str, f: F) -> String
+where
+    F: FnOnce() -> anyhow::Result<String> + Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => {
+            tracing::error!("{name}: {e:#}");
+            format!("Error: {e:#}")
+        }
+        Err(join_err) => {
+            let msg = if join_err.is_panic() {
+                let payload = join_err.into_panic();
+                payload
+                    .downcast_ref::<&str>()
+                    .map(|s| s.to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "unknown panic".to_string())
+            } else {
+                join_err.to_string()
+            };
+            tracing::error!("{name}: internal error: {msg}");
+            format!("Error: internal error in {name}: {msg}")
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -61,13 +98,8 @@ impl PileupServer {
     /// insertions, and deletions.
     #[tool(description = "Query a BAM file at a genomic position and return a text pileup")]
     async fn query_pileup(&self, Parameters(params): Parameters<QueryPileupParams>) -> String {
-        match self.do_query_pileup(params).await {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::error!("{:#}", e);
-                format!("Error: {:#}", e)
-            }
-        }
+        let this = self.clone();
+        run_blocking_tool("query_pileup", move || this.do_query_pileup(params)).await
     }
 
     /// Return the README documentation for this server, including usage instructions,
@@ -80,13 +112,8 @@ impl PileupServer {
     /// Return the SAM-format header of the BAM file, including @HD, @SQ, @RG, @PG lines.
     #[tool(description = "Return the SAM-format header of the BAM file")]
     async fn get_header(&self) -> String {
-        match self.do_get_header() {
-            Ok(header) => header,
-            Err(e) => {
-                tracing::error!("{:#}", e);
-                format!("Error: {:#}", e)
-            }
-        }
+        let this = self.clone();
+        run_blocking_tool("get_header", move || this.do_get_header()).await
     }
 }
 
@@ -105,19 +132,38 @@ impl PileupServer {
         String::from_utf8(buf).context("SAM header is not valid UTF-8")
     }
 
-    async fn do_query_pileup(&self, params: QueryPileupParams) -> anyhow::Result<String> {
+    fn do_query_pileup(&self, params: QueryPileupParams) -> anyhow::Result<String> {
         let config = &self.config;
 
         // Resolve per-call overrides against CLI defaults.
+        if let Some(w) = params.window
+            && !(MIN_WINDOW..=MAX_WINDOW).contains(&w)
+        {
+            anyhow::bail!(
+                "window {w} is out of range: must be between {MIN_WINDOW} and {MAX_WINDOW} bp"
+            );
+        }
         let window = params.window.unwrap_or(config.window);
         let min_mapq = params.min_mapq.unwrap_or(config.min_mapq);
         let show_strand = params.show_strand.unwrap_or(true);
         let show_mapq = params.show_mapq.unwrap_or(true);
 
+        // Validate the position before touching the reference or BAM. Out-of-range
+        // positions would otherwise index outside the fetched region while rendering.
+        let contig_len = contig_length(&config.bam_path, &params.chrom)? as i64;
+        if params.position < 1 || params.position > contig_len {
+            anyhow::bail!(
+                "position {} is out of range for {}: must be between 1 and {} (1-based)",
+                params.position,
+                params.chrom,
+                contig_len
+            );
+        }
+
         // Convert 1-based input position to 0-based internal coords.
         let query_pos_0 = params.position - 1;
         let region_start = (query_pos_0 - window as i64).max(0);
-        let region_end = query_pos_0 + window as i64;
+        let region_end = (query_pos_0 + window as i64).min(contig_len);
 
         debug!(
             chrom = %params.chrom,
@@ -196,5 +242,32 @@ impl PileupServer {
         );
 
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_blocking_tool;
+
+    #[tokio::test]
+    async fn run_blocking_tool_returns_output() {
+        let out = run_blocking_tool("t", || Ok("hello".to_string())).await;
+        assert_eq!(out, "hello");
+    }
+
+    #[tokio::test]
+    async fn run_blocking_tool_formats_errors() {
+        let out = run_blocking_tool("t", || anyhow::bail!("boom")).await;
+        assert_eq!(out, "Error: boom");
+    }
+
+    #[tokio::test]
+    async fn run_blocking_tool_turns_panic_into_error() {
+        let out = run_blocking_tool("t", || -> anyhow::Result<String> {
+            panic!("deliberate test panic")
+        })
+        .await;
+        assert!(out.starts_with("Error: internal error in t:"), "{out}");
+        assert!(out.contains("deliberate test panic"), "{out}");
     }
 }

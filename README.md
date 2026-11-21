@@ -87,7 +87,7 @@ All debug/log output goes to **stderr**. The MCP JSON-RPC protocol uses **stdout
 |---------------|---------|----------|-------------|
 | `chrom`       | string  | ✓        | Chromosome name exactly as in the BAM header (e.g. `chr1`, `1`, `chrM`) |
 | `position`    | integer | ✓        | 1-based genomic position to query |
-| `window`      | integer |          | Half-width of region in bp (overrides `--window`) |
+| `window`      | integer |          | Half-width of region in bp, 10–500 (overrides `--window`) |
 | `min_mapq`    | integer |          | Minimum mapping quality (overrides `--min-mapq`) |
 | `show_strand` | boolean |          | Show strand orientation per read [default: true] |
 | `show_mapq`   | boolean |          | Show mapping quality per read [default: true] |--allow-all-hosts

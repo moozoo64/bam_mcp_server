@@ -57,6 +57,36 @@ pub struct QueryResult {
     pub filtered_flags: usize,
 }
 
+/// Look up the length of `chrom` in a BAM header, or fail with a helpful
+/// "unknown chromosome" error listing some available names.
+fn lookup_contig_length(header: &noodles::sam::Header, chrom: &str) -> anyhow::Result<usize> {
+    match header.reference_sequences().get(chrom.as_bytes()) {
+        Some(rs) => Ok(rs.length().get()),
+        None => {
+            let available: Vec<String> = header
+                .reference_sequences()
+                .keys()
+                .take(10)
+                .map(|k| String::from_utf8_lossy(k).into_owned())
+                .collect();
+            bail!(
+                "Unknown chromosome: '{}'. Available (first 10): {}",
+                chrom,
+                available.join(", ")
+            );
+        }
+    }
+}
+
+/// Return the length (bp) of `chrom` as declared in the BAM header.
+pub fn contig_length(bam_path: &Path, chrom: &str) -> anyhow::Result<usize> {
+    let mut reader = bam::io::indexed_reader::Builder::default()
+        .build_from_path(bam_path)
+        .with_context(|| format!("Failed to open BAM: {}", bam_path.display()))?;
+    let header = reader.read_header().context("Failed to read BAM header")?;
+    lookup_contig_length(&header, chrom)
+}
+
 /// Query a BAM file for all reads overlapping `[start, end)` on `chrom`.
 ///
 /// Coordinates are **0-based, half-open**.
@@ -82,19 +112,7 @@ pub fn query_region(
     let header = reader.read_header().context("Failed to read BAM header")?;
 
     // Validate chromosome name against the header reference sequences.
-    if !header.reference_sequences().contains_key(chrom.as_bytes()) {
-        let available: Vec<String> = header
-            .reference_sequences()
-            .keys()
-            .take(10)
-            .map(|k| String::from_utf8_lossy(k).into_owned())
-            .collect();
-        bail!(
-            "Unknown chromosome: '{}'. Available (first 10): {}",
-            chrom,
-            available.join(", ")
-        );
-    }
+    lookup_contig_length(&header, chrom)?;
 
     // Build region — noodles uses 1-based inclusive positions.
     // 0-based half-open [start, end)  →  1-based inclusive [start+1, end]
