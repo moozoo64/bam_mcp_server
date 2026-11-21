@@ -1,41 +1,41 @@
 [package]
 name = "bam_mcp_server"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 
 [dependencies]
-noodles = { version = "0.109.0", features = [
+noodles = { version = "0.120.0", features = [
   "bgzf",
   "core",
   "fasta",
   "bam",
   "sam",
 ] }
-rand = "0.10.1"
-rmcp = { version = "1.5.0", features = [
+rand = "0.10.4"
+rmcp = { version = "3.11.0", features = [
   "server",
   "macros",
   "transport-io",
   "transport-streamable-http-server",
 ] }
-tokio = { version = "1.52.1", features = ["full"] }
-tokio-util = "0.7.18"
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-clap = { version = "4.6.1", features = ["derive"] }
-hyper = { version = "1.9.0", features = ["server", "http1"] }
-hyper-util = { version = "0.1.20", features = [
+tokio = { version = "1.54.1", features = ["full"] }
+tokio-util = "0.7.20"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+clap = { version = "4.6.9", features = ["derive"] }
+hyper = { version = "1.12.0", features = ["server", "http1"] }
+hyper-util = { version = "0.1.21", features = [
   "tokio",
   "server",
   "server-auto",
 ] }
 axum = "0.8.9"
-anyhow = "1.0.102"
-uuid = { version = "1.23.1", features = ["v4"] }
+anyhow = "1.0.104"
+uuid = { version = "1.29.3", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-schemars = "1"
+schemars = "1.2.3"
 
 [dev-dependencies]
 criterion = "0.8.2"
