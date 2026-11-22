@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      # The integration tests (tests/*.rs) and the unit tests skipped below
+      # need the sample BAM/FASTA in samples/, which is gitignored and not
+      # available in CI.
+      - name: Run tests
+        run: >
+          cargo test --lib --bins --verbose --
+          --skip query::tests::test_query_invalid_chrom
+          --skip query::tests::test_filter_mapq
+          --skip query::tests::test_site_depth_not_capped_by_max_depth
+          --skip query::tests::test_indel_counts_at_vcf_sites
+          --skip query::tests::test_query_known_region
+          --skip reference::tests::test_open
+          --skip reference::tests::test_fetch_chr1
+          --skip reference::tests::test_fetch_zero_start
+          --skip reference::tests::test_fetch_invalid_chrom
+        env:
+          RUST_BACKTRACE: 1
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          components: clippy
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          components: rustfmt
+          toolchain: stable
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --verbose

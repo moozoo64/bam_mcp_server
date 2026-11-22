@@ -117,6 +117,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn test_invalid_start_negative() {
         // Does not require sample files — purely validates argument guards
         // We can't open a real reader here, so we test the guard logic directly

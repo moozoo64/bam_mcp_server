@@ -338,12 +338,13 @@ pub fn render_pileup(
         .collect();
     let footer = render_footer(reads, query_offset, query_pos, query_result, opts);
 
-    let mut parts: Vec<String> = Vec::new();
-    parts.push(header);
-    parts.push(String::new()); // blank line
-    parts.push(ruler);
-    parts.push(ref_line);
-    parts.push(String::new()); // blank line
+    let mut parts: Vec<String> = vec![
+        header,
+        String::new(), // blank line
+        ruler,
+        ref_line,
+        String::new(), // blank line
+    ];
     parts.extend(read_lines);
     parts.push(String::new()); // blank line
     parts.push(footer);

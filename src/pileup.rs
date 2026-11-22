@@ -63,13 +63,11 @@ fn expand_one(
                         let base = record.sequence[read_pos];
                         let qual = record.base_quals[read_pos];
                         let ref_base = ref_seq[ri];
-                        bases[ri] = Some(
-                            if base.to_ascii_uppercase() == ref_base.to_ascii_uppercase() {
-                                PileupBase::Match { qual }
-                            } else {
-                                PileupBase::Mismatch { base, qual }
-                            },
-                        );
+                        bases[ri] = Some(if base.eq_ignore_ascii_case(&ref_base) {
+                            PileupBase::Match { qual }
+                        } else {
+                            PileupBase::Mismatch { base, qual }
+                        });
                     }
                     ref_pos += 1;
                     read_pos += 1;
